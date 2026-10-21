@@ -6,7 +6,8 @@
 #   디스패처가 brief 뒤에 결합해 전달 — brief 본문 inline 금지 규칙과 충돌 없이 대용량 자료 전달.
 #   미리보기: call_worker.sh --merged-preview <brief-file> <payload-file>  (백엔드 호출 없이 결합 결과 출력)
 # 사전 게이트: gate.sh(승인·[APPROVAL]·brief 위치/한도·외부쓰기 조건·D5) 통과 못 하면 exit 9.
-# 사후 검사: write_scope 패턴이면 scope_check.sh로 scope 밖 변경 보고(status=scope_violation, exit 10, 비파괴).
+# 사후 검사: 작업 cwd가 Git 안이면(모든 write_scope) scope_check.sh로 scope 밖 변경 보고(status=scope_violation, exit 10,
+#   비파괴). 검사 불가 = status=scope_error, exit 12. 비Git cwd는 scope_check=skipped.
 # 반환: stdout에 result envelope(JSON). exit 0=성공, 비0=실패/거부.
 set -euo pipefail
 
@@ -93,6 +94,13 @@ if [ "$PREVIEW" = 1 ]; then cat -- "$BRIEF"; exit 0; fi
 
 rec="$(jq -c --arg r "$ROLE" '.workers[$r] // empty' "$BACKENDS")"
 [ -n "$rec" ] || die "role 미정의: $ROLE" 2
+# native/mcp/미지원 call_type은 Hub 예약 전에 거부한다(외부로 나가지 않을 호출에 예약 영수증·dedup 지문을 남기지 않음).
+case "$(jq -r '.call_type // empty' <<<"$rec")" in
+  native) die "native는 오케스트레이터 직접 호출(디스패처 비경유) — native_worker_receipt.sh 사용" 3 ;;
+  mcp) die "MCP 직접 호출은 표준 경로가 아님 — CLI/API 디스패처 계약을 사용" 3 ;;
+  cli|api) ;;
+  *) die "잘못된 call_type: $(jq -r '.call_type // "<없음>"' <<<"$rec")" 7 ;;
+esac
 
 # Agent Hub 단일 게이트웨이 — Loadout 외부 worker도 작업 원장에 먼저 예약한다.
 # bridge 설정이 없거나 task.md의 Hub task ID가 없으면, 직접 CLI 호출은 허용하지 않는다.
@@ -278,8 +286,18 @@ GW_JSON="$("$HUB_CLI" gateway --hub-root "$HUB_ROOT" reserve-external --task-id 
 GW_DISPATCH_ID="$(jq -r '.dispatch_id // empty' <<<"$GW_JSON")"
 case "$GW_DISPATCH_ID" in [0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f]) ;; *) die "Agent Hub gateway가 dispatch ID를 반환하지 않음" 11;; esac
 
+# run_backend가 서브셸 안에서 die(설정 오류 등)하면 envelope 없이 비0으로 끝난다.
+# 그 경우에도 stdout 계약(JSON envelope)을 지키도록 에러 envelope를 합성한다.
+ensure_env() {  # ensure_env <envelope-or-empty> <rc> <spec>
+  if [ -n "$1" ] && jq -e . >/dev/null 2>&1 <<<"$1"; then printf '%s' "$1"; return 0; fi
+  jq -nc --argjson rc "$2" --arg backend "$(jq -r '.call_type // "?"' <<<"$3")" --arg model "$(jq -r '.model // "?"' <<<"$3")" \
+    '{status:"error", exit_code:$rc, backend:$backend, model:$model, duration_s:0, stdout:"",
+      stderr_sanitized:"디스패처가 backend 실행 전에 중단됨 — call_worker stderr 참조", scope_check:"skipped", scope_violations:[]}'
+}
+
 # primary → 실패 시 fallbacks 순차 (set -e 우회: || prc=$?)
 prc=0; env_primary="$(run_backend "$rec")" || prc=$?
+env_primary="$(ensure_env "$env_primary" "$prc" "$rec")"
 if [ "$prc" -eq 0 ]; then
   gateway_complete succeeded 0
   jq -n --argjson e "$env_primary" '$e + {fallback_used:false}'
@@ -298,6 +316,7 @@ last_env="$env_primary"; last_rc="$prc"
 while [ "$i" -lt "${nf:-0}" ]; do
   fb="$(jq -c --argjson i "$i" '.fallbacks[$i]' <<<"$rec")"
   frc=0; env_fb="$(run_backend "$fb")" || frc=$?
+  env_fb="$(ensure_env "$env_fb" "$frc" "$fb")"
   last_env="$env_fb"; last_rc="$frc"
   if [ "$frc" -eq 0 ]; then
     gateway_complete succeeded 0
@@ -316,5 +335,6 @@ if [ "$last_rc" -eq 124 ]; then
 else
   gateway_complete failed "$last_rc"
 fi
-jq -n --argjson e "$last_env" '$e + {fallback_used:true}'
+# 폴백이 실제로 시도됐을 때만 fallback_used=true (폴백 미등록이면 primary 실패 그대로)
+jq -n --argjson e "$last_env" --argjson fb "$([ "${nf:-0}" -gt 0 ] && echo true || echo false)" '$e + {fallback_used:$fb}'
 exit 1

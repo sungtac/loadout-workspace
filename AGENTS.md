@@ -19,7 +19,7 @@ Orchestrator (current provider: Codex or Claude, internal reasoning)
     └── gemini          [multimodal] multimodal · long documents · third-party perspective
 ```
 
-Slot→assignee mapping is owned by `_shared/capability-profile.md` (variable layer — update only the profile when a new model generation shifts the verdict). The engineer and computer-use slots default to the Orchestrator itself.
+Slot→assignee mapping is owned by `_shared/capability-profile.md` (variable layer — update only the profile when a new model generation shifts the verdict). Current profile (same for a Codex or Claude orchestrator — one common pipeline): strategist → `claude-main` (lightweight work may stay with the Orchestrator), engineer · computer-use → `codex-main`, reviewer → `codex-critic`, multimodal → `gemini`.
 
 > Note: this workspace ships a single `claude`-flavor `_shared/backends.json`, so the critic worker is `codex-critic`. When a Codex orchestrator needs cross-vendor (non-self) review of its own output, route that review through the agent-hub integration layer (provider handoff / shared ledger), not a local self-review.
 

@@ -12,7 +12,18 @@ TASKMD="$TDIR/task.md"; LOGMD="$TDIR/log.md"
 
 STATUS="$(grep -m1 -E '^status:' "$TASKMD" | sed -E 's/^status:[[:space:]]*//; s/[[:space:]]+#.*$//; s/[[:space:]]+$//')"
 # log 항목의 ACTION 태그 = "[timestamp] [TAG]" 의 두 번째 대괄호만 (본문에 인용된 [TAG]는 무시)
-tags() { [ -f "$LOGMD" ] && sed -nE 's/^\[[^]]*\][[:space:]]*\[([A-Z_]+)\].*/\1/p' "$LOGMD"; }
+# HTML 주석(<!-- -->)은 항목이 아니다 — _templates/log.md의 형식 예시 블록이 남아 있어도 집계하지 않는다.
+log_entries() {
+  [ -f "$LOGMD" ] && awk '{
+    line = $0; out = ""
+    while (line != "") {
+      if (inc) { i = index(line, "-->"); if (!i) { line = "" } else { line = substr(line, i + 3); inc = 0 } }
+      else { i = index(line, "<!--"); if (!i) { out = out line; line = "" } else { out = out substr(line, 1, i - 1); line = substr(line, i + 4); inc = 1 } }
+    }
+    print out
+  }' "$LOGMD"
+}
+tags() { log_entries | sed -nE 's/^\[[^]]*\][[:space:]]*\[([A-Z_]+)\].*/\1/p'; }
 has_tag() { tags | grep -qx "$1"; }
 MIS=()
 
@@ -36,7 +47,7 @@ esac
 echo "reentry — $TDIR"
 echo " status: ${STATUS:-<없음>}"
 if [ -f "$LOGMD" ]; then
-  echo " log 마지막: $(grep -E '^\[' "$LOGMD" | tail -1 | cut -c1-120)"
+  echo " log 마지막: $(log_entries | grep -E '^\[' | tail -1 | cut -c1-120)"
 else
   echo " log.md 없음"; MIS+=("log.md 없음")
 fi
@@ -48,7 +59,7 @@ if [ -d "$TDIR/workers" ]; then
     b=$([ -f "$d/brief.md" ] && echo Y || echo -)
     s=$([ -f "$d/result.md" ] && echo Y || echo -)
     a=$(awk '/^workers_approved:/{f=1;next} f&&(/^planned_workers:/||/^```/){exit} f' "$TASKMD" | grep -q "worker:[[:space:]]*$r[[:space:]]*$" && echo Y || echo -)
-    l=$([ -f "$LOGMD" ] && grep -F -- "$r" "$LOGMD" | sed -nE 's/^\[[^]]*\][[:space:]]*\[([A-Z_]+)\].*/[\1]/p' | tail -1 || true)
+    l=$([ -f "$LOGMD" ] && log_entries | grep -F -- "$r" | sed -nE 's/^\[[^]]*\][[:space:]]*\[([A-Z_]+)\].*/[\1]/p' | tail -1 || true)
     printf ' %-14s %-6s %-7s %-6s %s\n' "$r" "$b" "$s" "$a" "${l:--}"
   done
 fi

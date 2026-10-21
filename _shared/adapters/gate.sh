@@ -51,13 +51,26 @@ approved_entry() {
     cur { print }'
 }
 
+# log.md의 실제 [APPROVAL] 항목만: HTML 주석(<!-- -->, _templates/log.md의 형식 예시 블록 포함)은 제외하고
+# "[timestamp] [APPROVAL]" 태그 위치에 있는 줄만 인정한다(본문에 인용된 [APPROVAL]·템플릿 예시 잔존으로 통과 금지).
+approval_lines() {
+  awk '{
+    line = $0; out = ""
+    while (line != "") {
+      if (inc) { i = index(line, "-->"); if (!i) { line = "" } else { line = substr(line, i + 3); inc = 0 } }
+      else { i = index(line, "<!--"); if (!i) { out = out line; line = "" } else { out = out substr(line, 1, i - 1); line = substr(line, i + 4); inc = 1 } }
+    }
+    print out
+  }' "$LOGMD" 2>/dev/null | grep -E '^\[[^]]*\][[:space:]]*\[APPROVAL\]'
+}
+
 if [ -n "$TASK" ]; then
   # G2 — 승인
   if [ ! -f "$TASKMD" ]; then fail "G2 task.md 없음: $TASKMD"
   elif [ -z "$(approved_entry)" ]; then fail "G2 workers_approved에 $ROLE 없음 ($TASKMD)"; fi
   # G3 — [APPROVAL] 로그
   if [ ! -f "$LOGMD" ]; then fail "G3 log.md 없음: $LOGMD"
-  elif ! grep '\[APPROVAL\]' "$LOGMD" | grep -qE "(^|[^[:alnum:]_-])$ROLE([^[:alnum:]_-]|$)"; then fail "G3 log.md에 [APPROVAL] $ROLE 기록 없음"; fi
+  elif ! approval_lines | grep -qE "(^|[^[:alnum:]_-])$ROLE([^[:alnum:]_-]|$)"; then fail "G3 log.md에 [APPROVAL] $ROLE 기록 없음"; fi
 fi
 
 # G4 — brief 한도: 한글 비율 30% 초과면 한글 brief(≤1200자), 아니면 영문 brief(≤240단어)
@@ -100,7 +113,7 @@ case "$SCOPE" in
     fi
     if [ -n "$TASK" ] && [ -f "$LOGMD" ]; then
       # 같은 role·같은 write_scope 값이 한 줄에 있는 [APPROVAL] 만 인정 (다른 워커·이전 범위의 승인 로그는 무효)
-      grep '\[APPROVAL\]' "$LOGMD" | grep -E "(^|[^[:alnum:]_-])$ROLE([^[:alnum:]_-]|$)" | grep -qF -- "$SCOPE" \
+      approval_lines | grep -E "(^|[^[:alnum:]_-])$ROLE([^[:alnum:]_-]|$)" | grep -qF -- "$SCOPE" \
         || fail "G5 log.md [APPROVAL]에 '$ROLE' + write_scope '$SCOPE' 를 함께 담은 외부 쓰기 승인 기록 없음"
     fi
     ;;
