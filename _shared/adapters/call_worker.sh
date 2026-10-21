@@ -172,7 +172,10 @@ run_backend() {
     command_bin="$(jq -r '.cli.command' <<<"$spec")"
     case "$command_bin" in agy|codex|claude) ;; *) die "command allowlist 위반: $command_bin" 7;; esac
     cmd+=("$command_bin")
-    args_json="$(jq -r '.cli.args_template[]' <<<"$spec")"   # jq 실패 시 set -e 트리거
+    # run_backend는 `|| prc=$?` 문맥(=errexit 비활성)에서 실행되므로 set -e에 기대지 않고 명시적으로 거부한다.
+    # (누락 시 인자 없는 명령 — codex면 exec·--sandbox 없이 — 이 그대로 실행되던 fail-open 방지)
+    args_json="$(jq -er '.cli.args_template | arrays | .[]' <<<"$spec")" && [ -n "$args_json" ] \
+      || die "cli.args_template 누락·형식 오류(비어 있지 않은 배열 필요)" 7
     while IFS= read -r a; do
       case "$a" in
         "@brief")         cmd+=("$input_brief");;
@@ -295,6 +298,10 @@ ensure_env() {  # ensure_env <envelope-or-empty> <rc> <spec>
       stderr_sanitized:"디스패처가 backend 실행 전에 중단됨 — call_worker stderr 참조", scope_check:"skipped", scope_violations:[]}'
 }
 
+# scope 위반/검사 불가 판정은 backend 종료코드가 아니라 envelope status로 한다
+# (backend 자체가 exit 10/12로 실패해도 scope 결과로 오기록·폴백 생략하지 않도록).
+scope_final() { case "$(jq -r '.status // empty' <<<"$1")" in scope_violation|scope_error) return 0;; esac; return 1; }
+
 # primary → 실패 시 fallbacks 순차 (set -e 우회: || prc=$?)
 prc=0; env_primary="$(run_backend "$rec")" || prc=$?
 env_primary="$(ensure_env "$env_primary" "$prc" "$rec")"
@@ -304,7 +311,7 @@ if [ "$prc" -eq 0 ]; then
   exit 0
 fi
 # scope 위반(10)/검사 불가(12)는 재시도 대상이 아닌 최종 실패: 폴백 없이 해당 envelope 보존 (primary·fallback 동일)
-if [ "$prc" -eq 10 ] || [ "$prc" -eq 12 ]; then
+if scope_final "$env_primary"; then
   gateway_complete scope_violation "$prc"
   jq -n --argjson e "$env_primary" '$e + {fallback_used:false}'
   exit "$prc"
@@ -323,7 +330,7 @@ while [ "$i" -lt "${nf:-0}" ]; do
     jq -n --argjson e "$env_fb" '$e + {fallback_used:true}'
     exit 0
   fi
-  if [ "$frc" -eq 10 ] || [ "$frc" -eq 12 ]; then
+  if scope_final "$env_fb"; then
     gateway_complete scope_violation "$frc"
     jq -n --argjson e "$env_fb" '$e + {fallback_used:true}'
     exit "$frc"
