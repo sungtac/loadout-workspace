@@ -38,9 +38,10 @@ python3 "$STORE" --target "$ROOT" --doctor >"$tmp" 2>&1 || raw_rc=$?
 # 재판정 + 집계 재작성은 python이 담당(견고한 JSON/문자열 비교). 종료코드로 신호.
 #   0 = FAIL 없음·실제 WARN 없음, 2 = 실제 WARN 있음(FAIL 없음), 1 = FAIL 또는 guard 로컬정본 불일치
 set +e
-python3 - "$tmp" "$SETTINGS" "$CANON_HOOK" <<'PY'
+python3 - "$tmp" "$SETTINGS" "$CANON_HOOK" "$raw_rc" <<'PY'
 import json, re, sys
 report_path, settings_path, canon_path = sys.argv[1], sys.argv[2], sys.argv[3]
+raw_rc = int(sys.argv[4])
 lines = open(report_path, encoding="utf-8").read().splitlines()
 
 WARN_SIG = "guard(claude): Stop 훅이 hook.json 정본과 불일치"
@@ -68,10 +69,12 @@ def guard_hook_state():
 
 state = guard_hook_state()
 out = []
+reclassified = False
 for ln in lines:
     if ln.strip().startswith("진단 결과:"):
         continue  # 재집계 후 새로 쓴다
     if state == "benign" and WARN_SIG in ln:
+        reclassified = True
         out.append("  [INFO] guard(claude): Stop 훅이 로컬 정본(LOADOUT_LOCAL_COMPAT.md "
                    "— ~/.local/bin PATH 보정)과 일치 — 플러그인 generic canon과의 차이는 의도됨")
     else:
@@ -79,6 +82,11 @@ for ln in lines:
 
 fails = sum(1 for ln in out if "[FAIL]" in ln)
 warns = sum(1 for ln in out if "[WARN]" in ln)
+# store.py --doctor는 FAIL 줄이 있을 때만 1을 반환한다. FAIL 줄 없이 비0이면 doctor 자체가
+# 실패(sys.exit("[error] ...")·traceback)한 것 — 진단이 돌지 않았으므로 '이상 없음'으로 보고하지 않는다.
+if raw_rc != 0 and not fails:
+    out.append(f"  [FAIL] 플러그인 doctor 실행 실패(exit {raw_rc}) — 진단 미실행, 위 출력 확인")
+    fails = 1
 
 verdict = ("FAIL " + str(fails) + "건" if fails else "구조 이상 없음") \
     + (f", WARN {warns}건" if warns else "")
@@ -87,7 +95,7 @@ while out and not out[-1].strip():
     out.pop()
 out.append("")
 out.append(f"  진단 결과(로컬 정본 재판정): {verdict}")
-if state == "benign":
+if reclassified:
     out.append("  ⌙ generic doctor의 guard(claude) 훅 WARN 1건은 의도된 로컬 보정으로")
     out.append("    확인됨 → 실제 결함 아님(재설치하지 말 것).")
 elif state == "mismatch":
