@@ -1,6 +1,7 @@
 #!/usr/bin/env bash
 # call_worker.sh — backends.json 디스패처 (cli/api 전용).
-# native만 오케스트레이터가 직접 호출한다. MCP 직접 호출은 표준 경로가 아니다.
+# native 워커는 오케스트레이터가 직접 호출한다(cli 경로도 정의한 claude-main은 여기로도 보낼 수 있음 — Codex용).
+# MCP 직접 호출은 표준 경로가 아니다. 재시도는 CALL_WORKER_ATTEMPT=2(1회).
 # 사용: call_worker.sh <role> <brief-file> [payload-file]
 #   payload-file(선택): brief 한도(1200자)와 별도인 동봉 자료(예: sources/gemini-packet.md).
 #   디스패처가 brief 뒤에 결합해 전달 — brief 본문 inline 금지 규칙과 충돌 없이 대용량 자료 전달.
@@ -94,6 +95,12 @@ if [ "$PREVIEW" = 1 ]; then cat -- "$BRIEF"; exit 0; fi
 
 rec="$(jq -c --arg r "$ROLE" '.workers[$r] // empty' "$BACKENDS")"
 [ -n "$rec" ] || die "role 미정의: $ROLE" 2
+# native 워커가 cli 경로도 정의하면(claude-main) 디스패처는 그 cli 경로로 보낸다. Claude 오케스트레이터는
+# 계속 native(Task)+native_worker_receipt.sh를 쓰고, Task 도구가 없는 Codex 오케스트레이터는 이 경로로
+# 같은 워커를 같은 게이트·Hub 영수증 아래에서 부른다(양 provider 공통 파이프라인).
+if [ "$(jq -r '.call_type // empty' <<<"$rec")" = native ] && jq -e '.cli.command' <<<"$rec" >/dev/null 2>&1; then
+  rec="$(jq -c '.call_type = "cli" | .result_capture = "envelope"' <<<"$rec")"
+fi
 # native/mcp/미지원 call_type은 Hub 예약 전에 거부한다(외부로 나가지 않을 호출에 예약 영수증·dedup 지문을 남기지 않음).
 case "$(jq -r '.call_type // empty' <<<"$rec")" in
   native) die "native는 오케스트레이터 직접 호출(디스패처 비경유) — native_worker_receipt.sh 사용" 3 ;;
@@ -112,7 +119,7 @@ if [ -z "$HUB_CLI" ] && [ -f "$BRIDGE" ]; then HUB_CLI="$(jq -r '.cli // "agent-
 [ -n "$HUB_ROOT" ] || die "Agent Hub bridge 미설정: AGENT_HUB_ROOT 또는 $BRIDGE 필요" 5
 [ -x "$HUB_CLI" ] || command -v "$HUB_CLI" >/dev/null 2>&1 || die "Agent Hub CLI를 찾을 수 없음: $HUB_CLI" 5
 [ -f "$ROOT/tasks/$GATE_TASK/task.md" ] || die "Agent Hub bridge task.md 없음" 5
-HUB_TASK_ID="$(grep -m1 -E '^[[:space:]]*agent_hub_task_id:' "$ROOT/tasks/$GATE_TASK/task.md" | sed -E 's/^[[:space:]]*agent_hub_task_id:[[:space:]]*//; s/[[:space:]]+#.*$//')"
+HUB_TASK_ID="$(grep -m1 -E '^[[:space:]]*agent_hub_task_id:' "$ROOT/tasks/$GATE_TASK/task.md" | tr -d '\r' | sed -E 's/^[[:space:]]*agent_hub_task_id:[[:space:]]*//; s/[[:space:]]+#.*$//')"
 case "$HUB_TASK_ID" in task-[0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f]) ;; *) die "task.md agent_hub_task_id가 유효한 Hub task ID가 아님" 5;; esac
 
 # 폴백 가용성 사전 점검(경고만): primary가 죽고 나서야 폴백 불가를 아는 것을 방지
@@ -172,7 +179,10 @@ run_backend() {
     command_bin="$(jq -r '.cli.command' <<<"$spec")"
     case "$command_bin" in agy|codex|claude) ;; *) die "command allowlist 위반: $command_bin" 7;; esac
     cmd+=("$command_bin")
-    args_json="$(jq -r '.cli.args_template[]' <<<"$spec")"   # jq 실패 시 set -e 트리거
+    # run_backend는 `|| prc=$?` 문맥(=errexit 비활성)에서 실행되므로 set -e에 기대지 않고 명시적으로 거부한다.
+    # (누락 시 인자 없는 명령 — codex면 exec·--sandbox 없이 — 이 그대로 실행되던 fail-open 방지)
+    args_json="$(jq -er '.cli.args_template | arrays | .[]' <<<"$spec")" && [ -n "$args_json" ] \
+      || die "cli.args_template 누락·형식 오류(비어 있지 않은 배열 필요)" 7
     while IFS= read -r a; do
       case "$a" in
         "@brief")         cmd+=("$input_brief");;
@@ -273,7 +283,11 @@ run_backend() {
 command -v sha256sum >/dev/null 2>&1 || die "Agent Hub bridge에는 sha256sum 필요" 5
 GW_PROVIDER="$(jq -r '.cli.command // .api.ref // "unknown"' <<<"$rec")"
 [ "$GW_PROVIDER" = "agy" ] && GW_PROVIDER="antigravity"
-GW_FINGERPRINT="$({ printf '%s\0%s\0' "$ROLE" "$rec"; cat -- "$BRIEF"; } | sha256sum | awk '{print $1}')"
+# orchestrator-rules의 "실패/타임아웃 → 1회 재시도"는 같은 brief를 CALL_WORKER_ATTEMPT=2로 다시 부른다.
+# Hub는 같은 지문의 재예약을 거부하므로 회차를 지문에 넣어 재시도를 별개 요청으로 기록한다(1회차 지문은 불변).
+ATTEMPT="${CALL_WORKER_ATTEMPT:-1}"
+case "$ATTEMPT" in 1|2) ;; *) die "CALL_WORKER_ATTEMPT는 1(최초) 또는 2(1회 재시도)만 허용" 64 ;; esac
+GW_FINGERPRINT="$({ printf '%s\0%s\0' "$ROLE" "$rec"; [ "$ATTEMPT" = 1 ] || printf 'attempt:%s\0' "$ATTEMPT"; cat -- "$BRIEF"; } | sha256sum | awk '{print $1}')"
 # 예약 직전 정의: GW_DISPATCH_ID가 설정되는 순간부터 trap/cleanup이 이 함수를 쓸 수 있어야 한다.
 gateway_complete() {
   GW_COMPLETED=1   # 정상 경로 완료 후 EXIT trap의 중복 완료 방지
@@ -295,6 +309,10 @@ ensure_env() {  # ensure_env <envelope-or-empty> <rc> <spec>
       stderr_sanitized:"디스패처가 backend 실행 전에 중단됨 — call_worker stderr 참조", scope_check:"skipped", scope_violations:[]}'
 }
 
+# scope 위반/검사 불가 판정은 backend 종료코드가 아니라 envelope status로 한다
+# (backend 자체가 exit 10/12로 실패해도 scope 결과로 오기록·폴백 생략하지 않도록).
+scope_final() { case "$(jq -r '.status // empty' <<<"$1")" in scope_violation|scope_error) return 0;; esac; return 1; }
+
 # primary → 실패 시 fallbacks 순차 (set -e 우회: || prc=$?)
 prc=0; env_primary="$(run_backend "$rec")" || prc=$?
 env_primary="$(ensure_env "$env_primary" "$prc" "$rec")"
@@ -304,7 +322,7 @@ if [ "$prc" -eq 0 ]; then
   exit 0
 fi
 # scope 위반(10)/검사 불가(12)는 재시도 대상이 아닌 최종 실패: 폴백 없이 해당 envelope 보존 (primary·fallback 동일)
-if [ "$prc" -eq 10 ] || [ "$prc" -eq 12 ]; then
+if scope_final "$env_primary"; then
   gateway_complete scope_violation "$prc"
   jq -n --argjson e "$env_primary" '$e + {fallback_used:false}'
   exit "$prc"
@@ -323,7 +341,7 @@ while [ "$i" -lt "${nf:-0}" ]; do
     jq -n --argjson e "$env_fb" '$e + {fallback_used:true}'
     exit 0
   fi
-  if [ "$frc" -eq 10 ] || [ "$frc" -eq 12 ]; then
+  if scope_final "$env_fb"; then
     gateway_complete scope_violation "$frc"
     jq -n --argjson e "$env_fb" '$e + {fallback_used:true}'
     exit "$frc"

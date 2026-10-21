@@ -1,12 +1,12 @@
 # Orchestrator Rules
 
-Claude Code 세션이 MultiAgent Orchestrator로 동작할 때 지켜야 할 규칙. 각 항목은 세션 시작 시 자체 점검 대상이며, 위반 시 즉시 사용자에게 알리고 작업을 중단한다.
+Claude Code(`CLAUDE.md`) 또는 Codex(`AGENTS.md`) 세션이 MultiAgent Orchestrator로 동작할 때 지켜야 할 공통 규칙. 각 항목은 세션 시작 시 자체 점검 대상이며, 위반 시 즉시 사용자에게 알리고 작업을 중단한다.
 
 ---
 
 ## 1. Orchestrator 실행 환경
 
-MultiAgent Orchestrator는 인터랙티브 Claude Code 세션에서만 실행한다. 세션 시작 시 자체 점검:
+MultiAgent Orchestrator는 인터랙티브 세션(Claude Code 또는 Codex)에서만 실행한다. 세션 시작 시 자체 점검:
 
 - 시스템 프롬프트에 `# Background Session` 블록이 보이거나
 - `$CLAUDE_JOB_DIR` 환경변수가 설정돼 있으면
@@ -17,13 +17,13 @@ MultiAgent Orchestrator는 인터랙티브 Claude Code 세션에서만 실행한
 
 ## 2. 시스템 수정·검증 프로토콜
 
-**적용 조건 (게이트)**: 이번 작업이 시스템 파일 — `CLAUDE.md`·`_shared/*`·`_templates/*`·외부 매뉴얼(`<매뉴얼-경로>/`) — 을 **수정하거나 검증**하는 작업일 때만 이 절을 적용한다. 일반 작업에서는 아래 파일들을 읽지 않는다 (progressive disclosure — 상시 로드 금지).
+**적용 조건 (게이트)**: 이번 작업이 시스템 파일 — `CLAUDE.md`·`AGENTS.md`·`_shared/*`·`_templates/*`·외부 매뉴얼(`<매뉴얼-경로>/`) — 을 **수정하거나 검증**하는 작업일 때만 이 절을 적용한다. 일반 작업에서는 아래 파일들을 읽지 않는다 (progressive disclosure — 상시 로드 금지).
 
-**작업 위치**: 시스템 수정·검증은 `<설치한-폴더>/`에서 Claude Code로만 수행한다. 다른 디렉토리·다른 도구의 편집은 CLAUDE.md가 적용 안 되고 아래 점검을 건너뛰므로 금지(비권장). 외부 편집을 발견하면 사용자에게 알리고 점검부터 돌린다.
+**작업 위치**: 시스템 수정·검증은 `<설치한-폴더>/`에서 이 규칙이 적용되는 오케스트레이터 세션(Claude Code=`CLAUDE.md`, Codex=`AGENTS.md`)으로만 수행한다. 다른 디렉토리·다른 도구의 편집은 이 지침이 적용 안 되고 아래 점검을 건너뛰므로 금지(비권장). 외부 편집을 발견하면 사용자에게 알리고 점검부터 돌린다.
 
 **절차**:
 1. `_shared/design-basis.md` 를 읽는다 — 개념↔규칙 매핑·권위 우선순위·기존 결정(D*). GitHub 레퍼런스부터 재분석하지 말 것. design-basis로 충분.
-2. 수정한다 (권위 우선순위 준수: CLAUDE.md > routing/approval/orchestrator-rules > 매뉴얼).
+2. 수정한다 (권위 우선순위 준수: CLAUDE.md·AGENTS.md(같은 파이프라인의 두 진입점, 내용 동기화) > routing/approval/orchestrator-rules > 매뉴얼).
 3. 자가 점검 러너를 실행한다: `bash _shared/check-invariants.sh` (불변식 정의는 `_shared/system-invariants.md` 표).
 4. 통과 시에만 커밋. 깨지면 고치거나, 의도된 변경이면 `design-basis.md`의 결정(D*)과 `system-invariants.md`를 함께 갱신한 뒤 커밋.
 
@@ -47,7 +47,7 @@ MultiAgent Orchestrator는 인터랙티브 Claude Code 세션에서만 실행한
 - **status↔log 불일치 (다른 분기보다 먼저 적용)** — 위 분기들은 status를 신뢰해 판단하므로, 불일치 검사를 **가장 먼저** 한다. 불일치면(`reentry-check.sh` exit 11 — 검출만 하고 정정은 하지 않는다) log(append-only 정본)를 신뢰해 status를 실제에 맞게 정정하고 `[DECISION]` 기록한 뒤, **정정된 status로 위 분기를 다시 적용**한다 (불일치는 단독 종착 분기가 아니라 정규화 단계)
 
 **3단계 — 에러 후 진행(worker 실패·hang·상충)**:
-- 실패/타임아웃 → **1회 재시도**. 재실패 시 진행을 통째로 멈추지 말고 누락을 `result.md`·`log.md` `[ERROR]`에 명시하고 가능한 부분만 진행
+- 실패/타임아웃 → **1회 재시도**: 같은 brief를 `CALL_WORKER_ATTEMPT=2 bash _shared/adapters/call_worker.sh ...`로 다시 부른다(Hub는 같은 요청 지문의 재예약을 거부하므로 회차를 지문에 넣어 별개 요청으로 기록한다. 3회차 이상은 디스패처가 거부). 재실패 시 진행을 통째로 멈추지 말고 누락을 `result.md`·`log.md` `[ERROR]`에 명시하고 가능한 부분만 진행
 - 결과 상충(병렬·재실행 간) → 삭제 금지. 양쪽 출처 병기, 권위 우선순위/사실검증으로 해소, `log.md` `[DECISION]` 기록 (routing.md Fan-in 규칙과 동일)
 
 재진입 시에도 승인 게이트·외부 쓰기 4조건은 그대로 유효. 재개 시 status를 `in_progress`로 되돌린다.

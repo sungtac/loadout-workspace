@@ -55,12 +55,14 @@ approved_entry() {
 # "[timestamp] [APPROVAL]" 태그 위치에 있는 줄만 인정한다(본문에 인용된 [APPROVAL]·템플릿 예시 잔존으로 통과 금지).
 approval_lines() {
   awk '{
-    line = $0; out = ""
-    while (line != "") {
-      if (inc) { i = index(line, "-->"); if (!i) { line = "" } else { line = substr(line, i + 3); inc = 0 } }
-      else { i = index(line, "<!--"); if (!i) { out = out line; line = "" } else { out = out substr(line, 1, i - 1); line = substr(line, i + 4); inc = 1 } }
-    }
-    print out
+    sub(/\r$/, ""); line = $0; out = ""
+    # 렌더링 기준(CommonMark): 블록 주석은 줄 첫머리 <!-- 에서만 열리고 --> 에서 닫힌다.
+    # 항목 본문 중간의 짝 없는 "<!--"는 문자열일 뿐 — 뒤따르는 항목을 숨기지 않는다.
+    if (!inc && line ~ /^[ \t]*<!--/) { inc = 1; line = substr(line, index(line, "<!--") + 4) }
+    if (inc) { i = index(line, "-->"); if (!i) { print ""; next } line = substr(line, i + 3); inc = 0 }
+    # 같은 줄에서 닫히는 인라인 주석만 제거
+    while ((i = index(line, "<!--")) && (j = index(substr(line, i + 4), "-->"))) { out = out substr(line, 1, i - 1); line = substr(line, i + 4 + j + 2) }
+    print out line
   }' "$LOGMD" 2>/dev/null | grep -E '^\[[^]]*\][[:space:]]*\[APPROVAL\]'
 }
 
@@ -90,8 +92,8 @@ else
 fi
 
 # G5 — 외부 쓰기 조건
-yaml_val() { # yaml_val <key> — brief에서 첫 매치, 따옴표·주석 제거
-  grep -m1 -E "^[[:space:]]*$1:" "$BRIEF" | sed -E "s/^[[:space:]]*$1:[[:space:]]*//; s/[[:space:]]+#.*$//; s/^[\"']//; s/[\"'][[:space:]]*$//"
+yaml_val() { # yaml_val <key> — brief에서 첫 매치, CR(CRLF 파일)·따옴표·주석 제거
+  grep -m1 -E "^[[:space:]]*$1:" "$BRIEF" | tr -d '\r' | sed -E "s/^[[:space:]]*$1:[[:space:]]*//; s/[[:space:]]+#.*$//; s/^[\"']//; s/[\"'][[:space:]]*$//"
 }
 SCOPE="$(yaml_val write_scope)"; [ -n "$SCOPE" ] || SCOPE="none"
 REPO="$(yaml_val target_repo)"
@@ -104,8 +106,8 @@ case "$SCOPE" in
     elif [ ! -d "$REPO" ]; then fail "G5 target_repo 디렉터리 없음: $REPO"; fi
     if [ -n "$TASK" ] && [ -f "$TASKMD" ]; then
       # 승인 항목의 target_repo·write_scope 가 brief 값과 정확히 일치해야 (다르면 기존 승인 무효 — orchestrator-rules §3)
-      a_scope="$(approved_entry | grep -m1 -E '^[[:space:]]*write_scope:' | sed -E "s/^[[:space:]]*write_scope:[[:space:]]*//; s/[[:space:]]+#.*$//; s/^[\"']//; s/[\"'][[:space:]]*$//")"
-      a_repo="$(approved_entry | grep -m1 -E '^[[:space:]]*target_repo:' | sed -E "s/^[[:space:]]*target_repo:[[:space:]]*//; s/[[:space:]]+#.*$//; s/^[\"']//; s/[\"'][[:space:]]*$//")"
+      a_scope="$(approved_entry | grep -m1 -E '^[[:space:]]*write_scope:' | tr -d '\r' | sed -E "s/^[[:space:]]*write_scope:[[:space:]]*//; s/[[:space:]]+#.*$//; s/^[\"']//; s/[\"'][[:space:]]*$//")"
+      a_repo="$(approved_entry | grep -m1 -E '^[[:space:]]*target_repo:' | tr -d '\r' | sed -E "s/^[[:space:]]*target_repo:[[:space:]]*//; s/[[:space:]]+#.*$//; s/^[\"']//; s/[\"'][[:space:]]*$//")"
       [ -n "$a_scope" ] || fail "G5 task.md workers_approved의 $ROLE 항목에 write_scope 승인 없음"
       [ -n "$a_repo" ]  || fail "G5 task.md workers_approved의 $ROLE 항목에 target_repo 승인 없음"
       [ -z "$a_scope" ] || [ "$a_scope" = "$SCOPE" ] || fail "G5 write_scope 승인값('$a_scope') ≠ brief('$SCOPE') — 재승인 필요"

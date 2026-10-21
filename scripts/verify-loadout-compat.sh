@@ -213,7 +213,11 @@ cat >"$fakebin/codex" <<'EOF'
 #!/usr/bin/env bash
 cat >/dev/null; echo fake-codex
 EOF
-chmod +x "$fakebin/agent-hub" "$fakebin/codex"
+cat >"$fakebin/claude" <<'EOF'
+#!/usr/bin/env bash
+printf '%s\n' "$@" >"$FAKE_CLAUDE_ARGS"; cat >"$FAKE_CLAUDE_STDIN"; echo fake-claude
+EOF
+chmod +x "$fakebin/agent-hub" "$fakebin/codex" "$fakebin/claude"
 printf '{"hub_root":"%s","cli":"%s"}\n' "$pipe/hub" "$fakebin/agent-hub" >"$ws/_local/agent-hub-bridge.json"
 sed 's/^agent_hub_task_id: N\/A$/agent_hub_task_id: task-0123456789abcdef0123456789abcdef/; s/^workers_approved: \[\]$/workers_approved:\n  - worker: claude-main\n  - worker: codex-main/' \
   "$ROOT/_templates/task.md" >"$ws/tasks/t/task.md"
@@ -221,7 +225,7 @@ cp "$ROOT/_templates/log.md" "$ws/tasks/t/log.md"
 cp "$ROOT/_templates/context.md" "$ws/tasks/t/context.md"
 printf 'Plan it.\n' >"$ws/tasks/t/workers/claude-main/brief.md"
 printf 'target_repo: N/A\nwrite_scope: tasks-only\n\nDo it.\n' >"$ws/tasks/t/workers/codex-main/brief.md"
-pipe_env=(env -u AGENT_HUB_ROOT -u AGENT_HUB_CLI -u CLAUDE_JOB_DIR MULTIAGENT_ROOT="$ws" FAKE_HUB_LOG="$pipe/hub.log" PATH="$fakebin:$PATH")
+pipe_env=(env -u AGENT_HUB_ROOT -u AGENT_HUB_CLI -u CLAUDE_JOB_DIR -u CALL_WORKER_ATTEMPT MULTIAGENT_ROOT="$ws" FAKE_HUB_LOG="$pipe/hub.log" FAKE_CLAUDE_ARGS="$pipe/claude.args" FAKE_CLAUDE_STDIN="$pipe/claude.stdin" PATH="$fakebin:$PATH")
 
 # 템플릿 log.md의 주석 속 형식 예시 [APPROVAL]/[COMPLETE]는 실제 항목이 아니다
 if ! "${pipe_env[@]}" bash "$ws/_shared/adapters/gate.sh" "$ws/tasks/t/workers/claude-main/brief.md" >/dev/null 2>&1 \
@@ -243,7 +247,8 @@ else
   ng 'native receipt accepts task-<32hex> and only native workers'
 fi
 
-# 디스패처: native 역할은 Hub 예약 전에 exit 3, backend 사전중단도 JSON envelope 유지
+# 디스패처: cli 경로가 없는 native 역할은 Hub 예약 전에 exit 3, backend 사전중단도 JSON envelope 유지
+jq 'del(.workers["claude-main"].cli)' "$ROOT/_shared/backends.json" >"$ws/_shared/backends.json"
 : >"$pipe/hub.log"; disp_native_rc=0
 "${pipe_env[@]}" bash "$ws/_shared/adapters/call_worker.sh" claude-main "$ws/tasks/t/workers/claude-main/brief.md" >/dev/null 2>&1 || disp_native_rc=$?
 jq '.workers["codex-main"].cli.command = "sh"' "$ROOT/_shared/backends.json" >"$ws/_shared/backends.json"
@@ -258,6 +263,127 @@ if [ "$disp_native_rc" = 3 ] && ! grep -q 'claude-main\|--provider unknown' "$pi
   ok 'dispatcher refuses native before Hub reservation and always emits an envelope'
 else
   ng 'dispatcher refuses native before Hub reservation and always emits an envelope'
+fi
+
+# 양 provider: Codex 오케스트레이터는 claude-main을 디스패처 cli 경로로 부른다 — 읽기 전용·격리 플래그,
+# brief는 stdin, Hub 영수증은 provider claude로 같은 gate 아래 예약
+cp "$ROOT/_shared/backends.json" "$ws/_shared/backends.json"
+: >"$pipe/hub.log"; cm_rc=0
+: >"$pipe/claude.args"; : >"$pipe/claude.stdin"   # 이전 실행 잔여물 제거(검사는 이번 호출만 본다)
+cm_out="$("${pipe_env[@]}" bash "$ws/_shared/adapters/call_worker.sh" claude-main "$ws/tasks/t/workers/claude-main/brief.md" 2>/dev/null)" || cm_rc=$?
+cm_args="$(tr '\n' ' ' <"$pipe/claude.args" 2>/dev/null || true)"
+cm_flags=1
+for f in -p '--permission-mode plan' '--safe-mode' '--restricted' '--no-session-persistence'; do
+  case " $cm_args" in *" $f "*) ;; *) cm_flags=0 ;; esac
+done
+if [ "$cm_rc" = 0 ] && jq -e '.status == "ok" and (.stdout | contains("fake-claude"))' >/dev/null 2>&1 <<<"$cm_out" \
+  && [ "$cm_flags" = 1 ] \
+  && grep -q 'Plan it.' "$pipe/claude.stdin" 2>/dev/null && grep -q 'reserve-external.*--provider claude' "$pipe/hub.log"; then
+  ok 'claude-main is reachable through the dispatcher (Codex orchestrator) read-only'
+else
+  ng 'claude-main is reachable through the dispatcher (Codex orchestrator) read-only'
+fi
+
+# 1회 재시도: CALL_WORKER_ATTEMPT=2는 다른 Hub 지문, 3회차는 예약 전 거부
+: >"$pipe/hub.log"
+"${pipe_env[@]}" bash "$ws/_shared/adapters/call_worker.sh" codex-main "$ws/tasks/t/workers/codex-main/brief.md" >/dev/null 2>&1 || true
+"${pipe_env[@]}" CALL_WORKER_ATTEMPT=2 bash "$ws/_shared/adapters/call_worker.sh" codex-main "$ws/tasks/t/workers/codex-main/brief.md" >/dev/null 2>&1 || true
+att3_rc=0; "${pipe_env[@]}" CALL_WORKER_ATTEMPT=3 bash "$ws/_shared/adapters/call_worker.sh" codex-main "$ws/tasks/t/workers/codex-main/brief.md" >/dev/null 2>&1 || att3_rc=$?
+fps="$({ grep -o -- '--fingerprint [0-9a-f]*' "$pipe/hub.log" || true; } | sort -u | wc -l)"
+if [ "$fps" = 2 ] && [ "$(grep -c reserve-external "$pipe/hub.log")" = 2 ] && [ "$att3_rc" = 64 ]; then
+  ok 'a retry is a distinct Hub request and only one retry is allowed'
+else
+  ng 'a retry is a distinct Hub request and only one retry is allowed'
+fi
+
+# 디스패처: args_template 누락은 인자 없는 backend 실행(fail-open) 대신 거부, backend 자체의 exit 12는 scope 결과로 오기록 금지
+jq 'del(.workers["codex-main"].cli.args_template)' "$ROOT/_shared/backends.json" >"$ws/_shared/backends.json"
+: >"$pipe/hub.log"; noargs_rc=0
+noargs_out="$("${pipe_env[@]}" bash "$ws/_shared/adapters/call_worker.sh" codex-main "$ws/tasks/t/workers/codex-main/brief.md" 2>/dev/null)" || noargs_rc=$?
+cp "$ROOT/_shared/backends.json" "$ws/_shared/backends.json"
+mv "$fakebin/codex" "$fakebin/codex.ok"
+printf '#!/usr/bin/env bash\ncat >/dev/null; exit 12\n' >"$fakebin/codex"; chmod +x "$fakebin/codex"
+: >"$pipe/hub.log"; be12_rc=0
+be12_out="$("${pipe_env[@]}" bash "$ws/_shared/adapters/call_worker.sh" codex-main "$ws/tasks/t/workers/codex-main/brief.md" 2>/dev/null)" || be12_rc=$?
+mv -f "$fakebin/codex.ok" "$fakebin/codex"
+if [ "$noargs_rc" != 0 ] && jq -e '.exit_code == 7 and (.stdout | contains("fake-codex") | not)' >/dev/null 2>&1 <<<"$noargs_out" \
+  && [ "$be12_rc" = 1 ] && jq -e '.status == "error"' >/dev/null 2>&1 <<<"$be12_out" \
+  && grep -q -- '--status failed --return-code 12' "$pipe/hub.log" && ! grep -q -- '--status scope_violation' "$pipe/hub.log"; then
+  ok 'dispatcher rejects missing args_template and keeps backend exit codes out of scope status'
+else
+  ng 'dispatcher rejects missing args_template and keeps backend exit codes out of scope status'
+fi
+
+# log 주석 처리: 항목 본문 속 짝 없는 "<!--"가 뒤 항목을 숨기지 않는다 (재진입 fail-open·게이트 오거부 방지)
+stray="$pipe/stray"; mkdir -p "$stray/tasks/s/workers/claude-main"
+sed 's/^agent_hub_task_id: N\/A$/agent_hub_task_id: task-0123456789abcdef0123456789abcdef/; s/^workers_approved: \[\]$/workers_approved:\n  - worker: claude-main/' \
+  "$ROOT/_templates/task.md" >"$stray/tasks/s/task.md"
+{ cat "$ROOT/_templates/log.md"
+  printf '[2026-01-01 00:00] [DECISION] page uses a stray <!-- marker\n[2026-01-01 00:01] [WORKER_CALL] claude-main brief\n[2026-01-01 00:02] [APPROVAL] claude-main 승인 <!-- inline note -->\n'; } >"$stray/tasks/s/log.md"
+printf 'Plan it.\n' >"$stray/tasks/s/workers/claude-main/brief.md"
+stray_re_rc=0; "${pipe_env[@]}" bash "$ws/_shared/reentry-check.sh" "$stray/tasks/s" >/dev/null 2>&1 || stray_re_rc=$?
+if [ "$stray_re_rc" = 11 ] \
+  && env -u CLAUDE_JOB_DIR MULTIAGENT_ROOT="$stray" bash "$ws/_shared/adapters/gate.sh" "$stray/tasks/s/workers/claude-main/brief.md" >/dev/null 2>&1; then
+  ok 'stray <!-- inside a log entry does not hide later entries'
+else
+  ng 'stray <!-- inside a log entry does not hide later entries'
+fi
+
+# CRLF 저장된 task.md·brief·log도 같은 판정 (CR 때문에 유효한 Hub ID·scope를 거부하지 않음)
+cp -R "$ws/tasks/t" "$ws/tasks/crlf"
+for f in task.md log.md workers/claude-main/brief.md workers/codex-main/brief.md; do sed -i.bak 's/$/\r/' "$ws/tasks/crlf/$f" && rm -f "$ws/tasks/crlf/$f.bak"; done
+crlf_gate_rc=0; crlf_native_rc=0
+"${pipe_env[@]}" bash "$ws/_shared/adapters/gate.sh" "$ws/tasks/crlf/workers/codex-main/brief.md" >/dev/null 2>&1 || crlf_gate_rc=$?
+"${pipe_env[@]}" bash "$ws/_shared/adapters/native_worker_receipt.sh" start claude-main "$ws/tasks/crlf/workers/claude-main/brief.md" >/dev/null 2>&1 || crlf_native_rc=$?
+if [ "$crlf_gate_rc" = 0 ] && [ "$crlf_native_rc" = 0 ]; then
+  ok 'CRLF task files pass the same gate and Hub ID checks'
+else
+  ng 'CRLF task files pass the same gate and Hub ID checks'
+fi
+
+# 승인 로그 형식 문서 = gate가 인정하는 형식 (timestamp 없는 예시 금지), 두 진입점 동일 안내
+if ! grep -q '`\[APPROVAL\] ' "$ROOT/_shared/approval-policy.md" "$CLAUDE_FILE" "$AGENTS_FILE" \
+  && grep -Fq '[APPROVAL] <role>' "$CLAUDE_FILE" && grep -Fq '[APPROVAL] <role>' "$AGENTS_FILE" \
+  && grep -Fq 'call_worker.sh claude-main' "$AGENTS_FILE" && grep -Fq 'call_worker.sh claude-main' "$CLAUDE_FILE" \
+  && grep -Fq 'Never substitute a direct `claude` CLI/MCP call' "$AGENTS_FILE"; then
+  ok 'approval log format and native claude-main path are documented for both orchestrators'
+else
+  ng 'approval log format and native claude-main path are documented for both orchestrators'
+fi
+
+# Codex 요금가드 워처: 정지는 coach exit 10뿐 — 부재·크래시는 fail-open(문서·Claude 훅과 동일)
+watch_case() { # <coach 스크립트 본문 또는 빈 값> → shouldStop 결과 JSON
+  local d; d="$(mktemp -d "$scope_tmp/watch.XXXX")"; mkdir -p "$d/bin" "$d/home"
+  [ -n "$1" ] && { printf '#!/usr/bin/env bash\n%s\n' "$1" >"$d/bin/coach"; chmod +x "$d/bin/coach"; }
+  HOME="$d/home" PATH="$d/bin:/usr/bin:/bin" GUARD_PROVIDERS='codex;rm -rf x' node --input-type=module -e '
+    import { spawn } from "node:child_process"; import fs from "node:fs";
+    const src = fs.readFileSync(process.argv[1], "utf8");
+    const pick = (re) => (src.match(re) || [""])[0];
+    const code = pick(/const DEFAULT_PROVIDERS[\s\S]*?DEFAULT_PROVIDERS;/) + "\nconst log = () => {};\n"
+      + pick(/function shouldStop\(\) \{[\s\S]*?\n\}\n/);
+    const shouldStop = new Function("spawn", "process", code + "\nreturn shouldStop;")(spawn, process);
+    console.log(JSON.stringify(await shouldStop()));' "$ROOT/_shared/guard/codex_goal_watch.mjs" 2>/dev/null
+}
+w_absent="$(watch_case '' || true)"; w_crash="$(watch_case 'exit 1' || true)"
+w_stop="$(watch_case 'echo "codex 주간 한도 초과"; exit 10' || true)"
+if jq -e '.stop == false' >/dev/null 2>&1 <<<"$w_absent" && jq -e '.stop == false' >/dev/null 2>&1 <<<"$w_crash" \
+  && jq -e '.stop == true and (.reason | contains("한도"))' >/dev/null 2>&1 <<<"$w_stop" \
+  && grep -Fq 'const DEFAULT_PROVIDERS = "claude,codex,antigravity"' "$ROOT/_shared/guard/codex_goal_watch.mjs"; then
+  ok 'Codex guard watcher stops only on coach exit 10 (fail-open otherwise)'
+else
+  ng 'Codex guard watcher stops only on coach exit 10 (fail-open otherwise)'
+fi
+
+# doctor 래퍼: 플러그인 doctor 자체가 실패하면 '이상 없음'으로 보고하지 않는다
+fakegen="$pipe/fakegen"; mkdir -p "$fakegen/fragments/guard"
+canon_cmd="$(jq -r '.hooks.Stop[0].hooks[0].command' "$SETTINGS" | sed -E 's/^PATH="[^"]*";[[:space:]]*//')"
+jq -n --arg c "$canon_cmd" '{hooks:[{type:"command", command:$c}]}' >"$fakegen/fragments/guard/hook.json"
+printf 'import sys\nsys.exit("[error] simulated doctor crash")\n' >"$fakegen/store.py"
+doc_rc=0; LOADOUT_PLUGIN_DIR="$fakegen" bash "$ROOT/scripts/loadout-doctor.sh" >/dev/null 2>&1 || doc_rc=$?
+if [ "$doc_rc" = 1 ]; then
+  ok 'doctor wrapper fails closed when the plugin doctor itself fails'
+else
+  ng 'doctor wrapper fails closed when the plugin doctor itself fails'
 fi
 
 if bash "$ROOT/_shared/check-invariants.sh" >/dev/null; then
