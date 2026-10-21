@@ -21,6 +21,8 @@ Orchestrator (current provider: Codex or Claude, internal reasoning)
 
 Slot→assignee mapping is owned by `_shared/capability-profile.md` (variable layer — update only the profile when a new model generation shifts the verdict). The engineer and computer-use slots default to the Orchestrator itself.
 
+> Note: this workspace ships a single `claude`-flavor `_shared/backends.json`, so the critic worker is `codex-critic`. When a Codex orchestrator needs cross-vendor (non-self) review of its own output, route that review through the agent-hub integration layer (provider handoff / shared ledger), not a local self-review.
+
 **Important**: The Orchestrator's internal reasoning is not a worker. A separate `claude-main`, `codex-main`, `codex-critic`, or `gemini` call is a worker/model call and must pass the approval gate for the task.
 
 ## Operating Principles
