@@ -12,7 +12,26 @@
         "model_alias": "opus"
       },
       "approval_class": "worker",
-      "result_capture": "orchestrator"
+      "result_capture": "orchestrator",
+      "brief_mode": "stdin",
+      "cli": {
+        "command": "claude",
+        "args_template": [
+          "-p",
+          "--model",
+          "opus",
+          "--permission-mode",
+          "plan",
+          "--permission-prompts",
+          "none",
+          "--no-session-persistence",
+          "--safe-mode",
+          "--restricted"
+        ]
+      },
+      "cwd_policy": "target",
+      "timeout": 600,
+      "fallbacks": []
     },
     "codex-main": {
       "model": "codex-default",

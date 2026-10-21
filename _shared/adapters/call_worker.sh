@@ -1,6 +1,7 @@
 #!/usr/bin/env bash
 # call_worker.sh — backends.json 디스패처 (cli/api 전용).
-# native만 오케스트레이터가 직접 호출한다. MCP 직접 호출은 표준 경로가 아니다.
+# native 워커는 오케스트레이터가 직접 호출한다(cli 경로도 정의한 claude-main은 여기로도 보낼 수 있음 — Codex용).
+# MCP 직접 호출은 표준 경로가 아니다. 재시도는 CALL_WORKER_ATTEMPT=2(1회).
 # 사용: call_worker.sh <role> <brief-file> [payload-file]
 #   payload-file(선택): brief 한도(1200자)와 별도인 동봉 자료(예: sources/gemini-packet.md).
 #   디스패처가 brief 뒤에 결합해 전달 — brief 본문 inline 금지 규칙과 충돌 없이 대용량 자료 전달.
@@ -94,6 +95,12 @@ if [ "$PREVIEW" = 1 ]; then cat -- "$BRIEF"; exit 0; fi
 
 rec="$(jq -c --arg r "$ROLE" '.workers[$r] // empty' "$BACKENDS")"
 [ -n "$rec" ] || die "role 미정의: $ROLE" 2
+# native 워커가 cli 경로도 정의하면(claude-main) 디스패처는 그 cli 경로로 보낸다. Claude 오케스트레이터는
+# 계속 native(Task)+native_worker_receipt.sh를 쓰고, Task 도구가 없는 Codex 오케스트레이터는 이 경로로
+# 같은 워커를 같은 게이트·Hub 영수증 아래에서 부른다(양 provider 공통 파이프라인).
+if [ "$(jq -r '.call_type // empty' <<<"$rec")" = native ] && jq -e '.cli.command' <<<"$rec" >/dev/null 2>&1; then
+  rec="$(jq -c '.call_type = "cli" | .result_capture = "envelope"' <<<"$rec")"
+fi
 # native/mcp/미지원 call_type은 Hub 예약 전에 거부한다(외부로 나가지 않을 호출에 예약 영수증·dedup 지문을 남기지 않음).
 case "$(jq -r '.call_type // empty' <<<"$rec")" in
   native) die "native는 오케스트레이터 직접 호출(디스패처 비경유) — native_worker_receipt.sh 사용" 3 ;;
@@ -276,7 +283,11 @@ run_backend() {
 command -v sha256sum >/dev/null 2>&1 || die "Agent Hub bridge에는 sha256sum 필요" 5
 GW_PROVIDER="$(jq -r '.cli.command // .api.ref // "unknown"' <<<"$rec")"
 [ "$GW_PROVIDER" = "agy" ] && GW_PROVIDER="antigravity"
-GW_FINGERPRINT="$({ printf '%s\0%s\0' "$ROLE" "$rec"; cat -- "$BRIEF"; } | sha256sum | awk '{print $1}')"
+# orchestrator-rules의 "실패/타임아웃 → 1회 재시도"는 같은 brief를 CALL_WORKER_ATTEMPT=2로 다시 부른다.
+# Hub는 같은 지문의 재예약을 거부하므로 회차를 지문에 넣어 재시도를 별개 요청으로 기록한다(1회차 지문은 불변).
+ATTEMPT="${CALL_WORKER_ATTEMPT:-1}"
+case "$ATTEMPT" in 1|2) ;; *) die "CALL_WORKER_ATTEMPT는 1(최초) 또는 2(1회 재시도)만 허용" 64 ;; esac
+GW_FINGERPRINT="$({ printf '%s\0%s\0' "$ROLE" "$rec"; [ "$ATTEMPT" = 1 ] || printf 'attempt:%s\0' "$ATTEMPT"; cat -- "$BRIEF"; } | sha256sum | awk '{print $1}')"
 # 예약 직전 정의: GW_DISPATCH_ID가 설정되는 순간부터 trap/cleanup이 이 함수를 쓸 수 있어야 한다.
 gateway_complete() {
   GW_COMPLETED=1   # 정상 경로 완료 후 EXIT trap의 중복 완료 방지

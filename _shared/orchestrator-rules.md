@@ -47,7 +47,7 @@ MultiAgent Orchestrator는 인터랙티브 세션(Claude Code 또는 Codex)에�
 - **status↔log 불일치 (다른 분기보다 먼저 적용)** — 위 분기들은 status를 신뢰해 판단하므로, 불일치 검사를 **가장 먼저** 한다. 불일치면(`reentry-check.sh` exit 11 — 검출만 하고 정정은 하지 않는다) log(append-only 정본)를 신뢰해 status를 실제에 맞게 정정하고 `[DECISION]` 기록한 뒤, **정정된 status로 위 분기를 다시 적용**한다 (불일치는 단독 종착 분기가 아니라 정규화 단계)
 
 **3단계 — 에러 후 진행(worker 실패·hang·상충)**:
-- 실패/타임아웃 → **1회 재시도**. 재실패 시 진행을 통째로 멈추지 말고 누락을 `result.md`·`log.md` `[ERROR]`에 명시하고 가능한 부분만 진행
+- 실패/타임아웃 → **1회 재시도**: 같은 brief를 `CALL_WORKER_ATTEMPT=2 bash _shared/adapters/call_worker.sh ...`로 다시 부른다(Hub는 같은 요청 지문의 재예약을 거부하므로 회차를 지문에 넣어 별개 요청으로 기록한다. 3회차 이상은 디스패처가 거부). 재실패 시 진행을 통째로 멈추지 말고 누락을 `result.md`·`log.md` `[ERROR]`에 명시하고 가능한 부분만 진행
 - 결과 상충(병렬·재실행 간) → 삭제 금지. 양쪽 출처 병기, 권위 우선순위/사실검증으로 해소, `log.md` `[DECISION]` 기록 (routing.md Fan-in 규칙과 동일)
 
 재진입 시에도 승인 게이트·외부 쓰기 4조건은 그대로 유효. 재개 시 status를 `in_progress`로 되돌린다.
