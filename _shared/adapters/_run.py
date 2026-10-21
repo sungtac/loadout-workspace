@@ -28,13 +28,25 @@ def main() -> int:
         try:
             proc.wait(timeout=5)
         except subprocess.TimeoutExpired:
-            _kill_group(proc.pid, signal.SIGKILL)
+            pass
+        # 직접 자식이 SIGTERM에 먼저 죽어도, TERM을 무시하는 손자가 같은 세션에
+        # 남을 수 있다. 그룹 리더(직접 자식)의 생사와 무관하게 항상 SIGKILL까지
+        # 올려 그룹 전체를 확실히 제거한다(start_new_session이므로 pgid == proc.pid;
+        # 리더가 죽어도 멤버가 있는 한 이 pgid로 그룹에 신호를 보낼 수 있다).
+        _kill_group(proc.pid, signal.SIGKILL)
+        try:
+            proc.wait(timeout=5)
+        except subprocess.TimeoutExpired:
+            pass
         return 124
 
 
-def _kill_group(pid: int, sig: int) -> None:
+def _kill_group(pgid: int, sig: int) -> None:
+    # start_new_session=True로 자식을 띄웠으므로 자식 PID가 곧 프로세스그룹 ID다.
+    # getpgid()는 리더가 종료하면 ProcessLookupError가 나지만, pgid를 직접 쓰면
+    # 멤버(손자 등)가 남아 있는 한 그룹에 신호를 보낼 수 있다.
     try:
-        os.killpg(os.getpgid(pid), sig)
+        os.killpg(pgid, sig)
     except (ProcessLookupError, PermissionError):
         pass
 
