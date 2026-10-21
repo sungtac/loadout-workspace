@@ -18,10 +18,12 @@
 ## goal 요금가드
 
 - Stop Hook은 `~/.local/bin`을 PATH에 추가한 뒤 `coach --hook`을 호출한다.
+  - 이 PATH 보정 때문에 플러그인 generic doctor(`store.py --doctor`)는 "guard(claude): Stop 훅이 hook.json 정본과 불일치"로 **오탐(WARN)**한다. 이는 의도된 로컬 보정이므로 canon으로 재설치하지 말 것(재설치하면 PATH 보정이 제거돼 최소 환경에서 `coach` 미발견 → guard 무력화). 로컬 정본을 인식하는 `scripts/loadout-doctor.sh`가 이 WARN을 정상(INFO)으로 재판정한다.
 - 현재 guard는 `off`다. 활성화 전에는 `coach guard status`로 정책을 재확인한다.
 - guard가 중지한 작업은 자동 재할당하지 않는다. 재개·handoff는 사용자의 명시적 지시와 Agent Hub 원장 계약이 준비된 뒤에만 수행한다.
 
 ## 업데이트와 검증
 
 - Marketplace 업데이트 뒤에는 `bash scripts/verify-loadout-compat.sh`를 실행한다.
+- 구성 점검(doctor)은 플러그인 `store.py --doctor` 대신 **`bash scripts/loadout-doctor.sh`**(로컬 정본 인식 래퍼)를 사용한다. generic doctor를 그대로 돌리되 로컬 보정으로 인한 오탐을 재판정한다(읽기 전용, 플러그인 미수정).
 - 검증 실패 시 플러그인 캐시를 직접 편집하지 않고, 로컬 계약을 갱신하거나 upstream 이슈로 관리한다.
