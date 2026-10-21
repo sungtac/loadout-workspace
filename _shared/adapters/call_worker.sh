@@ -112,7 +112,7 @@ if [ -z "$HUB_CLI" ] && [ -f "$BRIDGE" ]; then HUB_CLI="$(jq -r '.cli // "agent-
 [ -n "$HUB_ROOT" ] || die "Agent Hub bridge 미설정: AGENT_HUB_ROOT 또는 $BRIDGE 필요" 5
 [ -x "$HUB_CLI" ] || command -v "$HUB_CLI" >/dev/null 2>&1 || die "Agent Hub CLI를 찾을 수 없음: $HUB_CLI" 5
 [ -f "$ROOT/tasks/$GATE_TASK/task.md" ] || die "Agent Hub bridge task.md 없음" 5
-HUB_TASK_ID="$(grep -m1 -E '^[[:space:]]*agent_hub_task_id:' "$ROOT/tasks/$GATE_TASK/task.md" | sed -E 's/^[[:space:]]*agent_hub_task_id:[[:space:]]*//; s/[[:space:]]+#.*$//')"
+HUB_TASK_ID="$(grep -m1 -E '^[[:space:]]*agent_hub_task_id:' "$ROOT/tasks/$GATE_TASK/task.md" | tr -d '\r' | sed -E 's/^[[:space:]]*agent_hub_task_id:[[:space:]]*//; s/[[:space:]]+#.*$//')"
 case "$HUB_TASK_ID" in task-[0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f]) ;; *) die "task.md agent_hub_task_id가 유효한 Hub task ID가 아님" 5;; esac
 
 # 폴백 가용성 사전 점검(경고만): primary가 죽고 나서야 폴백 불가를 아는 것을 방지

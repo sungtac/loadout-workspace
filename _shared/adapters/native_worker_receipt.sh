@@ -41,7 +41,7 @@ HUB_ROOT="${AGENT_HUB_ROOT:-}"; HUB_CLI="${AGENT_HUB_CLI:-}"
 [ -n "$HUB_CLI" ] || HUB_CLI="agent-hub"
 [ -x "$HUB_CLI" ] || command -v "$HUB_CLI" >/dev/null 2>&1 || die "Agent Hub CLI를 찾을 수 없음" 5
 TASKMD="$ROOT/tasks/$TASK/task.md"
-HUB_TASK_ID="$(grep -m1 -E '^[[:space:]]*agent_hub_task_id:' "$TASKMD" | sed -E 's/^[[:space:]]*agent_hub_task_id:[[:space:]]*//; s/[[:space:]]+#.*$//')"
+HUB_TASK_ID="$(grep -m1 -E '^[[:space:]]*agent_hub_task_id:' "$TASKMD" | tr -d '\r' | sed -E 's/^[[:space:]]*agent_hub_task_id:[[:space:]]*//; s/[[:space:]]+#.*$//')"
 # Hub task ID = task-<32hex> (call_worker.sh·_templates/task.md와 동일 계약)
 [[ "$HUB_TASK_ID" =~ ^task-[0-9a-f]{32}$ ]] || die "task.md agent_hub_task_id가 유효하지 않음" 5
 

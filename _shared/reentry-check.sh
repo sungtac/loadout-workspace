@@ -15,12 +15,14 @@ STATUS="$(grep -m1 -E '^status:' "$TASKMD" | sed -E 's/^status:[[:space:]]*//; s
 # HTML 주석(<!-- -->)은 항목이 아니다 — _templates/log.md의 형식 예시 블록이 남아 있어도 집계하지 않는다.
 log_entries() {
   [ -f "$LOGMD" ] && awk '{
-    line = $0; out = ""
-    while (line != "") {
-      if (inc) { i = index(line, "-->"); if (!i) { line = "" } else { line = substr(line, i + 3); inc = 0 } }
-      else { i = index(line, "<!--"); if (!i) { out = out line; line = "" } else { out = out substr(line, 1, i - 1); line = substr(line, i + 4); inc = 1 } }
-    }
-    print out
+    sub(/\r$/, ""); line = $0; out = ""
+    # 렌더링 기준(CommonMark): 블록 주석은 줄 첫머리 <!-- 에서만 열리고 --> 에서 닫힌다.
+    # 항목 본문 중간의 짝 없는 "<!--"는 문자열일 뿐 — 뒤따르는 항목을 숨기지 않는다.
+    if (!inc && line ~ /^[ \t]*<!--/) { inc = 1; line = substr(line, index(line, "<!--") + 4) }
+    if (inc) { i = index(line, "-->"); if (!i) { print ""; next } line = substr(line, i + 3); inc = 0 }
+    # 같은 줄에서 닫히는 인라인 주석만 제거
+    while ((i = index(line, "<!--")) && (j = index(substr(line, i + 4), "-->"))) { out = out substr(line, 1, i - 1); line = substr(line, i + 4 + j + 2) }
+    print out line
   }' "$LOGMD"
 }
 tags() { log_entries | sed -nE 's/^\[[^]]*\][[:space:]]*\[([A-Z_]+)\].*/\1/p'; }
