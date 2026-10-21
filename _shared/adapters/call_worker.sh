@@ -16,15 +16,23 @@ set -euo pipefail
 # 반영되지 않아 cleanup이 그 임시파일을 보지 못하고 전부 누수됐다. 파일에 적으면
 # 서브셸이 append한 경로가 디스크에 남아 부모 EXIT trap이 반드시 정리한다.
 _TMP_REGISTRY="$(mktemp "${TMPDIR:-/tmp}/call_worker-tmps.XXXXXX")"
+GW_DISPATCH_ID=""; GW_COMPLETED=0   # Hub 게이트웨이 예약 상태(중복완료 방지 플래그)
 cleanup() {  # 항상 0: EXIT trap이 종료코드 덮어쓰지 않도록
-  local p
+  local rc=$? p
+  # 예약이 완료 기록 없이 남으면(시그널·중도 die) dedup 교착을 막기 위해 실패로 완료 처리.
+  # gateway_complete는 예약 직전 정의되므로 GW_DISPATCH_ID가 설정됐다면 반드시 존재한다.
+  if [ -n "${GW_DISPATCH_ID:-}" ] && [ "${GW_COMPLETED:-0}" = 0 ]; then
+    gateway_complete failed "$rc" || true
+  fi
   if [ -f "$_TMP_REGISTRY" ]; then
     while IFS= read -r p; do [ -n "$p" ] && rm -rf -- "$p"; done <"$_TMP_REGISTRY"
     rm -f -- "$_TMP_REGISTRY"
   fi
   return 0
 }
-trap cleanup EXIT INT TERM
+on_signal() { trap - EXIT INT TERM; cleanup; exit 130; }
+trap cleanup EXIT
+trap on_signal INT TERM
 mktmp()  { local t; t="$(mktemp)";    printf '%s\n' "$t" >>"$_TMP_REGISTRY"; printf '%s' "$t"; }
 mktmpd() { local t; t="$(mktemp -d)"; printf '%s\n' "$t" >>"$_TMP_REGISTRY"; printf '%s' "$t"; }
 
@@ -206,7 +214,7 @@ run_backend() {
   # 실행 전 스냅샷(사후 scope_check용). git repo 아니면 검사 불가(skipped). git repo인데 스냅샷 실패면 fail-closed로 호출 거부.
   local snap="" scope_state="skipped"
   if git -C "$wd" rev-parse --is-inside-work-tree >/dev/null 2>&1; then
-    snap="$(mktmp)"
+    snap="$(mktmp)"; printf '%s\n' "$snap.err" >>"$_TMP_REGISTRY"   # 사이드카도 레지스트리에 등록(시그널 시 누수 방지)
     if ! bash "$SCRIPT_DIR/scope_check.sh" --snapshot "$wd" >"$snap" 2>"$snap.err"; then
       jq -n --arg model "$model" --arg backend "$ctype" --rawfile e "$snap.err" \
         '{status:"scope_error", exit_code:12, backend:$backend, model:$model, duration_s:0, stdout:"",
@@ -236,7 +244,7 @@ run_backend() {
   # error(status=scope_error, exit 12). 둘 다 폴백 없는 최종 실패.
   local viol="[]"
   if [ -n "$snap" ]; then
-    local vf src; vf="$(mktmp)"; scope_state="ok"
+    local vf src; vf="$(mktmp)"; printf '%s\n' "$vf.err" >>"$_TMP_REGISTRY"; scope_state="ok"   # 사이드카 등록(누수 방지)
     if bash "$SCRIPT_DIR/scope_check.sh" "$wd" "$GATE_SCOPE" "$snap" "$GATE_TASK" >"$vf" 2>"$vf.err"; then :; else src=$?
       if [ "$src" -eq 10 ]; then viol="$(jq -R . <"$vf" | jq -s .)"; status="scope_violation"; rc=10; scope_state="violation"
       else status="scope_error"; rc=12; scope_state="error"; cat "$vf.err" >>"$err"; fi
@@ -258,15 +266,17 @@ command -v sha256sum >/dev/null 2>&1 || die "Agent Hub bridge에는 sha256sum �
 GW_PROVIDER="$(jq -r '.cli.command // .api.ref // "unknown"' <<<"$rec")"
 [ "$GW_PROVIDER" = "agy" ] && GW_PROVIDER="antigravity"
 GW_FINGERPRINT="$({ printf '%s\0%s\0' "$ROLE" "$rec"; cat -- "$BRIEF"; } | sha256sum | awk '{print $1}')"
-GW_JSON="$("$HUB_CLI" gateway --hub-root "$HUB_ROOT" reserve-external --task-id "$HUB_TASK_ID" --channel loadout-worker --maximum 32 --fingerprint "$GW_FINGERPRINT" --provider "$GW_PROVIDER")" || die "Agent Hub gateway 예약 거부(중복/한도/원장 오류)" 11
-GW_DISPATCH_ID="$(jq -r '.dispatch_id // empty' <<<"$GW_JSON")"
-case "$GW_DISPATCH_ID" in [0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f]) ;; *) die "Agent Hub gateway가 dispatch ID를 반환하지 않음" 11;; esac
+# 예약 직전 정의: GW_DISPATCH_ID가 설정되는 순간부터 trap/cleanup이 이 함수를 쓸 수 있어야 한다.
 gateway_complete() {
+  GW_COMPLETED=1   # 정상 경로 완료 후 EXIT trap의 중복 완료 방지
   "$HUB_CLI" gateway --hub-root "$HUB_ROOT" complete-external --task-id "$HUB_TASK_ID" --dispatch-id "$GW_DISPATCH_ID" --status "$1" --return-code "$2" >/dev/null \
     || { echo "call_worker: 경고 — Agent Hub gateway 완료 영수증 기록 실패" >&2; return 0; }
   "$HUB_CLI" loadout --hub-root "$HUB_ROOT" sync-task --project-root "$ROOT" --task-name "$GATE_TASK" >/dev/null \
     || echo "call_worker: 경고 — Agent Hub 관리 블록 동기화 실패" >&2
 }
+GW_JSON="$("$HUB_CLI" gateway --hub-root "$HUB_ROOT" reserve-external --task-id "$HUB_TASK_ID" --channel loadout-worker --maximum 32 --fingerprint "$GW_FINGERPRINT" --provider "$GW_PROVIDER")" || die "Agent Hub gateway 예약 거부(중복/한도/원장 오류)" 11
+GW_DISPATCH_ID="$(jq -r '.dispatch_id // empty' <<<"$GW_JSON")"
+case "$GW_DISPATCH_ID" in [0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f]) ;; *) die "Agent Hub gateway가 dispatch ID를 반환하지 않음" 11;; esac
 
 # primary → 실패 시 fallbacks 순차 (set -e 우회: || prc=$?)
 prc=0; env_primary="$(run_backend "$rec")" || prc=$?
@@ -283,9 +293,12 @@ if [ "$prc" -eq 10 ] || [ "$prc" -eq 12 ]; then
 fi
 nf="$(jq '.fallbacks | length' <<<"$rec")"
 env_fb=""; i=0
+# 최종 영수증이 실제로 내보낸 envelope와 일치하도록 '마지막 시도'의 rc·envelope를 추적
+last_env="$env_primary"; last_rc="$prc"
 while [ "$i" -lt "${nf:-0}" ]; do
   fb="$(jq -c --argjson i "$i" '.fallbacks[$i]' <<<"$rec")"
   frc=0; env_fb="$(run_backend "$fb")" || frc=$?
+  last_env="$env_fb"; last_rc="$frc"
   if [ "$frc" -eq 0 ]; then
     gateway_complete succeeded 0
     jq -n --argjson e "$env_fb" '$e + {fallback_used:true}'
@@ -298,10 +311,10 @@ while [ "$i" -lt "${nf:-0}" ]; do
   fi
   i=$((i+1))
 done
-if [ "$prc" -eq 124 ]; then
-  gateway_complete timed_out "$prc"
+if [ "$last_rc" -eq 124 ]; then
+  gateway_complete timed_out "$last_rc"
 else
-  gateway_complete failed 1
+  gateway_complete failed "$last_rc"
 fi
-jq -n --argjson e "${env_fb:-$env_primary}" '$e + {fallback_used:true}'
+jq -n --argjson e "$last_env" '$e + {fallback_used:true}'
 exit 1

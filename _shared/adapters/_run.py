@@ -20,7 +20,10 @@ def main() -> int:
     except FileNotFoundError:
         return 127
     try:
-        return proc.wait(timeout=timeout)
+        rc = proc.wait(timeout=timeout)
+        # 비타임아웃 경로에서 자식이 시그널로 죽으면 wait()가 음수(-N)를 반환한다.
+        # 셸 관례(128+시그널)로 정규화해 혼란스러운 256−N 종료코드를 피한다. (타임아웃은 아래에서 124 유지)
+        return 128 + (-rc) if rc < 0 else rc
     except subprocess.TimeoutExpired:
         # 타임아웃은 우리가 종료시킨 것이므로 자식의 신호-사망 코드(-15 등)가 아니라
         # 항상 124를 반환한다(coreutils timeout 의미와 일치, docstring 보장).

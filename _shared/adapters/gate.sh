@@ -61,7 +61,12 @@ if [ -n "$TASK" ]; then
 fi
 
 # G4 — brief 한도: 한글 비율 30% 초과면 한글 brief(≤1200자), 아니면 영문 brief(≤240단어)
-chars=$(wc -m <"$BRIEF" | tr -d ' '); words=$(wc -w <"$BRIEF" | tr -d ' ')
+# 문자수는 로캘 비의존으로 센다: `wc -m`은 LC_ALL=C에서 바이트를 세어 한글 brief가 ~3배로
+# 부풀고 한도 판정이 뒤집힌다. UTF-8 코드포인트 수 = 전체 바이트 − continuation 바이트(0x80-0xBF).
+# 아래 한글 바이트 집계와 동일하게 LC_ALL=C 바이트 기반으로 세어 결정적으로 판정한다.
+bytes=$(wc -c <"$BRIEF" | tr -d ' ')
+cont=$(LC_ALL=C grep -o $'[\x80-\xBF]' "$BRIEF" | wc -l | tr -d ' ')
+chars=$((bytes - cont)); words=$(wc -w <"$BRIEF" | tr -d ' ')
 # 일부 UTF-8 로캘은 범위식 [가-힣]을 유효하지 않은 collation으로 해석한다.
 # 바이트 단위 C 로캘에서 UTF-8 코드포인트 범위를 세어, 경고 없이 결정적으로 판정한다.
 hangul=$(LC_ALL=C grep -o $'[\xEA-\xED][\x80-\xBF][\x80-\xBF]' "$BRIEF" | wc -l | tr -d ' ')
