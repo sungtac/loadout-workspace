@@ -68,7 +68,7 @@ decision tree로 "누구를" 고른 뒤, "어떻게 엮을지" 고른다. **단�
 - **슬롯**: strategist
 - **용도**: 기획, 요구사항 정의, 설계 문서, 사용자 스토리, 아키텍처, 전략 수립, UI/UX 디자인 방향, 문체가 중요한 글쓰기, 까다로운 로직 설계, 디버깅 원인 분석, (설계와 분리 곤란한) 핵심 구현
 - **결과물**: 코드 (구현·수정·diff), 설계 문서, 구조도, 의사결정 근거
-- **호출 명령**: Claude Code 내장 **Task tool (sub-agent)**
+- **호출 명령**: Claude Code 내장 **Task tool (sub-agent)** — 앞뒤로 `native_worker_receipt.sh start`/`complete` (CLAUDE.md·AGENTS.md Task Lifecycle 6). Codex 오케스트레이터에는 이 도구가 없으므로 `claude` CLI/MCP 직접 호출로 대체하지 않고, 같은 task를 Claude 오케스트레이터로 넘겨(Agent Hub 핸드오프) 동일 절차로 실행한다
   - `subagent_type`: `claude-main` (`.claude/agents/claude-main.md`에 정의)
   - `prompt`: brief.md 내용 그대로 전달
   - `model`: agent 정의 파일 frontmatter의 `model: opus`가 자동 적용 (별칭 — 현재 환경의 Opus로 해석. 버전 문자열 핀하지 않음. 모델 정책 참조)

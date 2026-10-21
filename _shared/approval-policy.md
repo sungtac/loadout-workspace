@@ -15,7 +15,7 @@
    - 무슨 목적으로
    - 예상 호출 횟수 (쿼터 영향 포함)
 3. 승인 시 `task.md`의 `workers_approved`에 추가
-4. `log.md`에 `[APPROVAL]` 태그로 승인 기록
+4. `log.md`에 `[YYYY-MM-DD HH:MM] [APPROVAL] <worker> ...` 형식으로 승인 기록 — timestamp 다음 필드가 `[APPROVAL]`이고 같은 줄에 worker 이름이 있어야 `gate.sh` G3가 인정한다(HTML 주석 안의 예시·본문 인용은 무효)
 5. 이후 해당 작업 내에서는 동일 worker 재승인 불필요
 
 ## 승인 예외
@@ -65,6 +65,6 @@ workers_approved:
     write_scope: "src/**, tests/**"
 ```
 
-`log.md`의 `[APPROVAL]` 줄에도 같은 worker와 `write_scope` 값을 함께 적는다 (예: `[APPROVAL] codex-main 외부 쓰기 승인 write_scope="src/**, tests/**"`).
+`log.md`의 `[APPROVAL]` 줄에도 같은 worker와 `write_scope` 값을 함께 적는다 (예: `[2026-05-11 14:31] [APPROVAL] codex-main 외부 쓰기 승인 write_scope="src/**, tests/**"` — timestamp 없는 줄은 G3·G5가 거부).
 
 날짜 명령어: `date +%Y-%m-%d`

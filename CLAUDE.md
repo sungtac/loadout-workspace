@@ -91,7 +91,7 @@ Strong success criteria let you loop independently. Weak criteria ("make it work
    - codex-main이 planned_workers에 포함되거나 코드·문서·이미지를 만드는 작업이면 사용자에게 `target_repo` 경로를 묻는다
    - 사용자가 "없음"이라고 답하거나 분석·리뷰·요약·기획만 하는 작업이면 묻지 않고 `tasks/<task>/artifacts/`에 diff·patch로 산출
    - 사용자가 자연어 요청에 이미 경로를 포함했으면 다시 묻지 않음
-4. 모든 worker(claude-main 포함) 사용 시 `task.md`의 `workers_approved`에 명시적 기록 필요
+4. 모든 worker(claude-main 포함) 사용 시 `task.md`의 `workers_approved`에 명시적 기록 필요. 같은 승인을 `log.md`에 `[YYYY-MM-DD HH:MM] [APPROVAL] <role> ...` 한 줄로도 남긴다(gate G3 — 형식·예시는 `_shared/approval-policy.md`)
 5. 각 worker의 brief를 **정확히 `tasks/<task>/workers/<role>/brief.md`** 에 작성 (≤ 1200자 한글 / 240단어 영문). 워커별 폴더로 분리할 것 — `<role>_brief.md`처럼 납작하게 만들지 말 것
 6. worker 실행 → 원문을 **`tasks/<task>/workers/<role>/result.md`** 에 저장 (같은 워커별 폴더). Codex·Gemini worker는 반드시 디스패처(`call_worker.sh`)로 호출한다. 디스패처는 gate를 항상, Git 작업공간에서는 scope 검사도 자동 적용한다(비Git이면 `scope_check: skipped`; Codex sandbox와 task cwd가 쓰기 경계). native `claude-main`도 반드시 `native_worker_receipt.sh start claude-main <brief>`로 Hub 영수증을 먼저 예약하고, Task 호출 뒤 같은 `dispatch_id`로 `complete`를 기록한다. 이 과정도 gate를 통과하며, Hub task ID 없는 native 호출은 금지한다. MCP를 직접 호출하는 것은 표준 경로가 아니며 금지한다.
 7. `result.md`의 Verification Checklist 실행

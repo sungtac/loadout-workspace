@@ -1,12 +1,12 @@
 # Orchestrator Rules
 
-Claude Code 세션이 MultiAgent Orchestrator로 동작할 때 지켜야 할 규칙. 각 항목은 세션 시작 시 자체 점검 대상이며, 위반 시 즉시 사용자에게 알리고 작업을 중단한다.
+Claude Code(`CLAUDE.md`) 또는 Codex(`AGENTS.md`) 세션이 MultiAgent Orchestrator로 동작할 때 지켜야 할 공통 규칙. 각 항목은 세션 시작 시 자체 점검 대상이며, 위반 시 즉시 사용자에게 알리고 작업을 중단한다.
 
 ---
 
 ## 1. Orchestrator 실행 환경
 
-MultiAgent Orchestrator는 인터랙티브 Claude Code 세션에서만 실행한다. 세션 시작 시 자체 점검:
+MultiAgent Orchestrator는 인터랙티브 세션(Claude Code 또는 Codex)에서만 실행한다. 세션 시작 시 자체 점검:
 
 - 시스템 프롬프트에 `# Background Session` 블록이 보이거나
 - `$CLAUDE_JOB_DIR` 환경변수가 설정돼 있으면
@@ -17,13 +17,13 @@ MultiAgent Orchestrator는 인터랙티브 Claude Code 세션에서만 실행한
 
 ## 2. 시스템 수정·검증 프로토콜
 
-**적용 조건 (게이트)**: 이번 작업이 시스템 파일 — `CLAUDE.md`·`_shared/*`·`_templates/*`·외부 매뉴얼(`<매뉴얼-경로>/`) — 을 **수정하거나 검증**하는 작업일 때만 이 절을 적용한다. 일반 작업에서는 아래 파일들을 읽지 않는다 (progressive disclosure — 상시 로드 금지).
+**적용 조건 (게이트)**: 이번 작업이 시스템 파일 — `CLAUDE.md`·`AGENTS.md`·`_shared/*`·`_templates/*`·외부 매뉴얼(`<매뉴얼-경로>/`) — 을 **수정하거나 검증**하는 작업일 때만 이 절을 적용한다. 일반 작업에서는 아래 파일들을 읽지 않는다 (progressive disclosure — 상시 로드 금지).
 
-**작업 위치**: 시스템 수정·검증은 `<설치한-폴더>/`에서 Claude Code로만 수행한다. 다른 디렉토리·다른 도구의 편집은 CLAUDE.md가 적용 안 되고 아래 점검을 건너뛰므로 금지(비권장). 외부 편집을 발견하면 사용자에게 알리고 점검부터 돌린다.
+**작업 위치**: 시스템 수정·검증은 `<설치한-폴더>/`에서 이 규칙이 적용되는 오케스트레이터 세션(Claude Code=`CLAUDE.md`, Codex=`AGENTS.md`)으로만 수행한다. 다른 디렉토리·다른 도구의 편집은 이 지침이 적용 안 되고 아래 점검을 건너뛰므로 금지(비권장). 외부 편집을 발견하면 사용자에게 알리고 점검부터 돌린다.
 
 **절차**:
 1. `_shared/design-basis.md` 를 읽는다 — 개념↔규칙 매핑·권위 우선순위·기존 결정(D*). GitHub 레퍼런스부터 재분석하지 말 것. design-basis로 충분.
-2. 수정한다 (권위 우선순위 준수: CLAUDE.md > routing/approval/orchestrator-rules > 매뉴얼).
+2. 수정한다 (권위 우선순위 준수: CLAUDE.md·AGENTS.md(같은 파이프라인의 두 진입점, 내용 동기화) > routing/approval/orchestrator-rules > 매뉴얼).
 3. 자가 점검 러너를 실행한다: `bash _shared/check-invariants.sh` (불변식 정의는 `_shared/system-invariants.md` 표).
 4. 통과 시에만 커밋. 깨지면 고치거나, 의도된 변경이면 `design-basis.md`의 결정(D*)과 `system-invariants.md`를 함께 갱신한 뒤 커밋.
 
