@@ -296,6 +296,59 @@ else
   ng 'a retry is a distinct Hub request and only one retry is allowed'
 fi
 
+# 실제 Agent Hub CLI 계약 회귀: 위 가짜 agent-hub는 어떤 인자도 받아들이므로 두 저장소 사이의 인자 드리프트를 못 잡는다.
+# 임시 Hub root·임시 작업공간 사본만 사용(실제 runtime·tasks/ 미접촉), backend는 가짜 codex — 모델·네트워크 호출 없음.
+real_hub="$(command -v agent-hub 2>/dev/null || true)"
+[ -n "$real_hub" ] || { [ -x "$HOME/agent-hub/.venv/bin/agent-hub" ] && real_hub="$HOME/agent-hub/.venv/bin/agent-hub"; } || true
+real_hub_case() { # <case-dir> <call_worker sed 식 또는 빈 값> → 0 = 전체 계약 통과 (errexit 비활성 문맥에서 호출 — 단계마다 명시 반환)
+  local d="$1" w hub t out did rc
+  w="$d/ws"; hub="$d/hub"; t="$w/tasks/rt"
+  mkdir -p "$hub" "$w/_local" "$d/bin" && cp -R "$ROOT/_shared" "$ROOT/_templates" "$w/" || return 1
+  [ -z "$2" ] || sed -i "$2" "$w/_shared/adapters/call_worker.sh" || return 1
+  printf '#!/usr/bin/env bash\ncat >/dev/null; echo fake-codex\n' >"$d/bin/codex" && chmod +x "$d/bin/codex" || return 1
+  mkdir -p "$t/workers/claude-main" "$t/workers/codex-main" || return 1
+  sed 's/^workers_approved: \[\]$/workers_approved:\n  - worker: claude-main\n  - worker: codex-main/' "$ROOT/_templates/task.md" >"$t/task.md" || return 1
+  { cat "$ROOT/_templates/log.md"; printf '[2026-01-01 00:00] [APPROVAL] claude-main 승인\n[2026-01-01 00:00] [APPROVAL] codex-main 승인\n'; } >"$t/log.md" || return 1
+  printf 'Plan it.\n' >"$t/workers/claude-main/brief.md"
+  printf 'target_repo: N/A\nwrite_scope: tasks-only\n\nDo it.\n' >"$t/workers/codex-main/brief.md"
+  printf '{"hub_root":"%s","cli":"%s"}\n' "$hub" "$real_hub" >"$w/_local/agent-hub-bridge.json"
+  local -a e=(env -u AGENT_HUB_ROOT -u AGENT_HUB_CLI -u CLAUDE_JOB_DIR -u CALL_WORKER_ATTEMPT MULTIAGENT_ROOT="$w" PATH="$d/bin:$PATH")
+  "$real_hub" init --hub-root "$hub" >/dev/null 2>&1 || return 2
+  out="$("$real_hub" loadout --hub-root "$hub" bind-task --project-root "$w" --task-name rt --title compat-real-hub --scope personal 2>/dev/null)" || return 3
+  [[ "$(jq -r .task_id <<<"$out" 2>/dev/null)" =~ ^task-[0-9a-f]{32}$ ]] \
+    && grep -Fxq "agent_hub_task_id: $(jq -r .task_id <<<"$out")" "$t/task.md" || return 3
+  out="$("${e[@]}" bash "$w/_shared/adapters/call_worker.sh" codex-main "$t/workers/codex-main/brief.md" 2>/dev/null)" || return 4
+  jq -e '.status == "ok" and (.stdout | contains("fake-codex"))' >/dev/null 2>&1 <<<"$out" || return 4
+  # call_worker의 complete-external·sync-task 실패는 경고뿐이라 rc로 안 보인다 — 원장 블록으로 확인
+  grep -Fq 'External worker receipts: `1` total, `0` pending' "$t/task.md" || return 4
+  rc=0; "${e[@]}" bash "$w/_shared/adapters/call_worker.sh" codex-main "$t/workers/codex-main/brief.md" >/dev/null 2>&1 || rc=$?
+  [ "$rc" = 11 ] || return 5
+  "${e[@]}" CALL_WORKER_ATTEMPT=2 bash "$w/_shared/adapters/call_worker.sh" codex-main "$t/workers/codex-main/brief.md" >/dev/null 2>&1 || return 6
+  out="$("${e[@]}" bash "$w/_shared/adapters/native_worker_receipt.sh" start claude-main "$t/workers/claude-main/brief.md" 2>/dev/null)" || return 7
+  did="$(jq -r '.dispatch_id // empty' <<<"$out" 2>/dev/null)"; [[ "$did" =~ ^[0-9a-f]{32}$ ]] || return 7
+  out="$("${e[@]}" bash "$w/_shared/adapters/native_worker_receipt.sh" complete "$t/workers/claude-main/brief.md" "$did" succeeded 0 2>/dev/null)" || return 8
+  jq -e '.external_dispatches | length == 3 and all(.status == "succeeded")' >/dev/null 2>&1 <<<"$out" || return 8
+  grep -Fq '<!-- agent-hub:ledger:start -->' "$t/task.md" \
+    && grep -Fq 'External worker receipts: `3` total, `0` pending' "$t/task.md" || return 9
+}
+if [ -z "$real_hub" ]; then
+  printf 'SKIP real Agent Hub contract (agent-hub CLI not found)\n'
+else
+  real_rc=0; real_hub_case "$scope_tmp/real-hub" '' || real_rc=$?
+  if [ "$real_rc" = 0 ]; then
+    ok 'loadout adapters satisfy the real Agent Hub CLI contract (bind, dispatch, dedup, retry, native receipt, ledger sync)'
+  else
+    ng "loadout adapters satisfy the real Agent Hub CLI contract (failed at step $real_rc)"
+  fi
+  # 음성 대조: 사본 call_worker.sh의 인자 하나를 바꾸면 실제 CLI가 거부해야 한다(가짜 Hub라면 통과했을 드리프트)
+  drift_rc=0; real_hub_case "$scope_tmp/real-hub-drift" 's/--fingerprint "\$GW_FINGERPRINT"/--finger-print "$GW_FINGERPRINT"/' || drift_rc=$?
+  if [ "$drift_rc" = 4 ]; then
+    ok 'real Agent Hub contract check catches CLI argument drift'
+  else
+    ng "real Agent Hub contract check catches CLI argument drift (got step $drift_rc)"
+  fi
+fi
+
 # 디스패처: args_template 누락은 인자 없는 backend 실행(fail-open) 대신 거부, backend 자체의 exit 12는 scope 결과로 오기록 금지
 jq 'del(.workers["codex-main"].cli.args_template)' "$ROOT/_shared/backends.json" >"$ws/_shared/backends.json"
 : >"$pipe/hub.log"; noargs_rc=0
