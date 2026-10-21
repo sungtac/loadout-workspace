@@ -1,0 +1,74 @@
+{
+  "schema_version": "1",
+  "flavor": "claude",
+  "multiagent_root_env": "MULTIAGENT_ROOT",
+  "workers": {
+    "claude-main": {
+      "model": "host-default",
+      "call_type": "native",
+      "native": {
+        "subagent_type": "claude-main",
+        "prompt_source": "brief",
+        "model_alias": "opus"
+      },
+      "approval_class": "worker",
+      "result_capture": "orchestrator"
+    },
+    "codex-main": {
+      "model": "codex-default",
+      "call_type": "cli",
+      "brief_mode": "stdin",
+      "cli": {
+        "command": "codex",
+        "args_template": [
+          "exec",
+          "--sandbox",
+          "workspace-write",
+          "-"
+        ]
+      },
+      "cwd_policy": "target",
+      "approval_class": "worker",
+      "result_capture": "envelope",
+      "timeout": 300,
+      "fallbacks": []
+    },
+    "codex-critic": {
+      "model": "codex-default",
+      "call_type": "cli",
+      "brief_mode": "stdin",
+      "cli": {
+        "command": "codex",
+        "args_template": [
+          "exec",
+          "--sandbox",
+          "read-only",
+          "-"
+        ]
+      },
+      "cwd_policy": "target",
+      "approval_class": "worker",
+      "result_capture": "envelope",
+      "timeout": 300,
+      "fallbacks": []
+    },
+    "gemini": {
+      "model": "gemini-3.1-pro-high",
+      "call_type": "cli",
+      "brief_mode": "content",
+      "cli": {
+        "command": "agy",
+        "args_template": [
+          "--prompt",
+          "@brief_content"
+        ]
+      },
+      "cwd_policy": "isolated_tmp",
+      "approval_class": "worker",
+      "result_capture": "envelope",
+      "timeout": 300,
+      "fallbacks": [],
+      "fallback_note": "api 폴백 슬롯(adapters/gemini_api.sh)은 미구현(무조건 exit 4)이라 비활성 — 등록 시 거짓 안전신호(design-basis 결정 참조). REST 구현 후 재등록."
+    }
+  }
+}
