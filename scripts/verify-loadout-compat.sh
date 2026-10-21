@@ -167,7 +167,7 @@ if [ -n "${KNOT_VAULT:-}" ]; then
     ng 'KNOT_VAULT directory and schema lint'
   fi
 elif [ -s "$HOME/.config/knot/vault" ]; then
-  vault="$(head -n 1 "$HOME/.config/knot/vault")"
+  vault="$(grep -m1 -v '^[[:space:]]*$' "$HOME/.config/knot/vault" || true)"   # 비어 있지 않은 첫 줄 (LOADOUT_LOCAL_COMPAT.md)
   if [ -d "$vault" ] && python3 "$vault/scripts/lint.py" "$vault" >/dev/null; then
     ok 'knot pointer directory and schema lint'
   else
@@ -175,6 +175,89 @@ elif [ -s "$HOME/.config/knot/vault" ]; then
   fi
 else
   ok 'knot intentionally inactive'
+fi
+
+# ── Codex·Claude 공통 파이프라인 문서 정합 (CLAUDE.md ↔ AGENTS.md ↔ backends.json) ──
+AGENTS_FILE="$ROOT/AGENTS.md"
+arch_workers() { sed -n '/^## Architecture/,/^## /p' "$1" | sed -nE 's/^[[:space:]│├└─]*(claude-main|codex-[a-z]+|gemini[a-z-]*|[a-z]+-[a-z]+)[[:space:]]+\[.*/\1/p' | sort -u; }
+backend_workers="$(jq -r '.workers | keys[]' "$BACKENDS" | sort -u)"
+if [ -n "$(arch_workers "$CLAUDE_FILE")" ] \
+  && [ "$(arch_workers "$CLAUDE_FILE")" = "$backend_workers" ] \
+  && [ "$(arch_workers "$AGENTS_FILE")" = "$backend_workers" ]; then
+  ok 'CLAUDE.md and AGENTS.md worker pools match backends.json'
+else
+  ng 'CLAUDE.md and AGENTS.md worker pools match backends.json'
+fi
+parity_ok=1
+for needle in 'call_worker.sh' '_shared/adapters/gate.sh' 'native_worker_receipt.sh start claude-main' \
+  'reentry-check.sh' 'scope_violation' 'exit 10' 'exit 12' 'scope_check: skipped' '_shared/capability-profile.md'; do
+  grep -Fq -- "$needle" "$CLAUDE_FILE" && grep -Fq -- "$needle" "$AGENTS_FILE" || { parity_ok=0; printf '  parity missing: %s\n' "$needle" >&2; }
+done
+grep -Fq 'default to the Orchestrator itself' "$AGENTS_FILE" && parity_ok=0
+if [ "$parity_ok" = 1 ]; then
+  ok 'AGENTS.md describes the same common pipeline as CLAUDE.md'
+else
+  ng 'AGENTS.md describes the same common pipeline as CLAUDE.md'
+fi
+
+# ── 공통 파이프라인 동작 회귀 (가짜 Hub CLI·가짜 codex — 외부 모델·네트워크 호출 없음) ──
+pipe="$scope_tmp/pipe"; ws="$pipe/ws"; fakebin="$pipe/bin"
+mkdir -p "$ws/tasks/t/workers/claude-main" "$ws/tasks/t/workers/codex-main" "$ws/_local" "$fakebin"
+cp -R "$ROOT/_shared" "$ROOT/_templates" "$ws/"
+cat >"$fakebin/agent-hub" <<'EOF'
+#!/usr/bin/env bash
+printf '%s\n' "$*" >>"$FAKE_HUB_LOG"
+case "$*" in *reserve-external*) printf '{"dispatch_id":"0123456789abcdef0123456789abcdef"}\n';; esac
+EOF
+cat >"$fakebin/codex" <<'EOF'
+#!/usr/bin/env bash
+cat >/dev/null; echo fake-codex
+EOF
+chmod +x "$fakebin/agent-hub" "$fakebin/codex"
+printf '{"hub_root":"%s","cli":"%s"}\n' "$pipe/hub" "$fakebin/agent-hub" >"$ws/_local/agent-hub-bridge.json"
+sed 's/^agent_hub_task_id: N\/A$/agent_hub_task_id: task-0123456789abcdef0123456789abcdef/; s/^workers_approved: \[\]$/workers_approved:\n  - worker: claude-main\n  - worker: codex-main/' \
+  "$ROOT/_templates/task.md" >"$ws/tasks/t/task.md"
+cp "$ROOT/_templates/log.md" "$ws/tasks/t/log.md"
+cp "$ROOT/_templates/context.md" "$ws/tasks/t/context.md"
+printf 'Plan it.\n' >"$ws/tasks/t/workers/claude-main/brief.md"
+printf 'target_repo: N/A\nwrite_scope: tasks-only\n\nDo it.\n' >"$ws/tasks/t/workers/codex-main/brief.md"
+pipe_env=(env -u AGENT_HUB_ROOT -u AGENT_HUB_CLI -u CLAUDE_JOB_DIR MULTIAGENT_ROOT="$ws" FAKE_HUB_LOG="$pipe/hub.log" PATH="$fakebin:$PATH")
+
+# 템플릿 log.md의 주석 속 형식 예시 [APPROVAL]/[COMPLETE]는 실제 항목이 아니다
+if ! "${pipe_env[@]}" bash "$ws/_shared/adapters/gate.sh" "$ws/tasks/t/workers/claude-main/brief.md" >/dev/null 2>&1 \
+  && "${pipe_env[@]}" bash "$ws/_shared/reentry-check.sh" "$ws/tasks/t" >/dev/null 2>&1; then
+  ok 'template log examples neither satisfy the approval gate nor trip re-entry'
+else
+  ng 'template log examples neither satisfy the approval gate nor trip re-entry'
+fi
+printf '[2026-01-01 00:00] [APPROVAL] claude-main 승인\n[2026-01-01 00:00] [APPROVAL] codex-main 승인\n' >>"$ws/tasks/t/log.md"
+
+# native 영수증: 32hex Hub task ID 수용, native가 아닌 워커 거부
+: >"$pipe/hub.log"; native_rc=0; native_bad_rc=0
+native_out="$("${pipe_env[@]}" bash "$ws/_shared/adapters/native_worker_receipt.sh" start claude-main "$ws/tasks/t/workers/claude-main/brief.md" 2>/dev/null)" || native_rc=$?
+"${pipe_env[@]}" bash "$ws/_shared/adapters/native_worker_receipt.sh" start codex-main "$ws/tasks/t/workers/codex-main/brief.md" >/dev/null 2>&1 || native_bad_rc=$?
+if [ "$native_rc" = 0 ] && [ "$(jq -r .dispatch_id <<<"$native_out")" = 0123456789abcdef0123456789abcdef ] \
+  && [ "$native_bad_rc" = 9 ] && [ "$(grep -c reserve-external "$pipe/hub.log")" = 1 ]; then
+  ok 'native receipt accepts task-<32hex> and only native workers'
+else
+  ng 'native receipt accepts task-<32hex> and only native workers'
+fi
+
+# 디스패처: native 역할은 Hub 예약 전에 exit 3, backend 사전중단도 JSON envelope 유지
+: >"$pipe/hub.log"; disp_native_rc=0
+"${pipe_env[@]}" bash "$ws/_shared/adapters/call_worker.sh" claude-main "$ws/tasks/t/workers/claude-main/brief.md" >/dev/null 2>&1 || disp_native_rc=$?
+jq '.workers["codex-main"].cli.command = "sh"' "$ROOT/_shared/backends.json" >"$ws/_shared/backends.json"
+disp_die_rc=0
+disp_die_out="$("${pipe_env[@]}" bash "$ws/_shared/adapters/call_worker.sh" codex-main "$ws/tasks/t/workers/codex-main/brief.md" 2>/dev/null)" || disp_die_rc=$?
+cp "$ROOT/_shared/backends.json" "$ws/_shared/backends.json"
+disp_ok_rc=0
+disp_ok_out="$("${pipe_env[@]}" bash "$ws/_shared/adapters/call_worker.sh" codex-main "$ws/tasks/t/workers/codex-main/brief.md" 2>/dev/null)" || disp_ok_rc=$?
+if [ "$disp_native_rc" = 3 ] && ! grep -q 'claude-main\|--provider unknown' "$pipe/hub.log" \
+  && [ "$disp_die_rc" = 1 ] && jq -e '.status == "error" and .exit_code == 7 and .fallback_used == false' >/dev/null 2>&1 <<<"$disp_die_out" \
+  && [ "$disp_ok_rc" = 0 ] && jq -e '.status == "ok" and (.stdout | contains("fake-codex"))' >/dev/null 2>&1 <<<"$disp_ok_out"; then
+  ok 'dispatcher refuses native before Hub reservation and always emits an envelope'
+else
+  ng 'dispatcher refuses native before Hub reservation and always emits an envelope'
 fi
 
 if bash "$ROOT/_shared/check-invariants.sh" >/dev/null; then
