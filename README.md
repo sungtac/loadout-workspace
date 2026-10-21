@@ -5,6 +5,7 @@ Claude Code를 오케스트레이터로 두고 Claude·Codex·Gemini를 워커�
 ## 핵심 아이디어
 
 - **Orchestrator = Claude Code 세션** (이 폴더 안에서 실행 시 `CLAUDE.md` 자동 적용)
+  또는 **Codex 세션** (`AGENTS.md` 자동 적용). 두 진입점 모두 같은 `_shared/` 공통 파이프라인(디스패처·gate·scope 검사·Hub 영수증)을 쓴다.
 - **Workers** = 외부 모델 호출. 모두 승인 게이트 통과 필요.
   - `claude-main` — [strategist] 기획·설계·아키텍처·전략·디자인 방향·문체 글쓰기
   - `codex-main` — [engineer·computer-use] 대규모 구현·테스트·로컬 검증·브라우저 자동화·이미지 생성
@@ -19,6 +20,7 @@ Claude Code를 오케스트레이터로 두고 Claude·Codex·Gemini를 워커�
 ```
 <설치한-폴더>/
 ├── CLAUDE.md              # 운영 규칙 전문 (이 폴더 안에서 claude 실행 시만 적용)
+├── AGENTS.md              # 같은 규칙의 Codex 진입점 (이 폴더 안에서 codex 실행 시 적용)
 ├── _shared/
 │   ├── routing.md             # worker 선택 decision tree + 호출 명령
 │   ├── approval-policy.md     # 승인 게이트 정책 (claude-main 포함)
