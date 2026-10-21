@@ -11,11 +11,22 @@
 set -euo pipefail
 
 # ── 임시자원 추적 + 강제 정리(die·인터럽트·정상 모두) ──
-_TMPS=()
-cleanup() { local p; for p in "${_TMPS[@]:-}"; do [ -n "$p" ] && rm -rf -- "$p"; done; return 0; }  # 항상 0: EXIT trap이 종료코드 덮어쓰지 않도록
+# 추적을 bash 배열이 아니라 레지스트리 '파일'에 적는다: mktmp/mktmpd는 거의 항상
+# `X="$(mktmp)"` 명령 치환(= 서브셸)에서 호출되는데, 서브셸의 배열 append는 부모 셸에
+# 반영되지 않아 cleanup이 그 임시파일을 보지 못하고 전부 누수됐다. 파일에 적으면
+# 서브셸이 append한 경로가 디스크에 남아 부모 EXIT trap이 반드시 정리한다.
+_TMP_REGISTRY="$(mktemp "${TMPDIR:-/tmp}/call_worker-tmps.XXXXXX")"
+cleanup() {  # 항상 0: EXIT trap이 종료코드 덮어쓰지 않도록
+  local p
+  if [ -f "$_TMP_REGISTRY" ]; then
+    while IFS= read -r p; do [ -n "$p" ] && rm -rf -- "$p"; done <"$_TMP_REGISTRY"
+    rm -f -- "$_TMP_REGISTRY"
+  fi
+  return 0
+}
 trap cleanup EXIT INT TERM
-mktmp()  { local t; t="$(mktemp)";    _TMPS+=("$t"); printf '%s' "$t"; }
-mktmpd() { local t; t="$(mktemp -d)"; _TMPS+=("$t"); printf '%s' "$t"; }
+mktmp()  { local t; t="$(mktemp)";    printf '%s\n' "$t" >>"$_TMP_REGISTRY"; printf '%s' "$t"; }
+mktmpd() { local t; t="$(mktemp -d)"; printf '%s\n' "$t" >>"$_TMP_REGISTRY"; printf '%s' "$t"; }
 
 die() { echo "call_worker: $1" >&2; exit "${2:-1}"; }
 
