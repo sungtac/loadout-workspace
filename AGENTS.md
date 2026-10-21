@@ -13,14 +13,15 @@
 ```
 Orchestrator (current provider: Codex or Claude, internal reasoning)
 └── Worker Pool (separate worker/model calls — approval required)
-    ├── codex-main      [engineer] large, separable implementation · analysis · tests · local verification · image generation
-    ├── claude-critic   [reviewer · strategist quality gate] Codex output review · adversarial critique
-    └── gemini          [multimodal] multimodal · long document · third-party perspective
+    ├── claude-main     [strategist] planning · design · architecture · strategy · design direction · prose writing · debugging root-cause analysis
+    ├── codex-main      [engineer · computer-use] large-scale implementation · code analysis · tests · diff · local verification · browser automation · image generation
+    ├── codex-critic    [reviewer] output review · critique
+    └── gemini          [multimodal] multimodal · long documents · third-party perspective
 ```
 
 Slot→assignee mapping is owned by `_shared/capability-profile.md` (variable layer — update only the profile when a new model generation shifts the verdict). The engineer and computer-use slots default to the Orchestrator itself.
 
-**Important**: The Orchestrator's internal reasoning is not a worker. A separate `codex-main`, `claude-critic`, or `gemini` call is a worker/model call and must pass the approval gate for the task.
+**Important**: The Orchestrator's internal reasoning is not a worker. A separate `claude-main`, `codex-main`, `codex-critic`, or `gemini` call is a worker/model call and must pass the approval gate for the task.
 
 ## Operating Principles
 
@@ -98,9 +99,9 @@ Strong success criteria let you loop independently. Weak criteria ("make it work
    - If `codex-main` is planned, or the task creates code, docs, or images for another repo, ask for `target_repo` before filling `task.md`.
    - If the user says there is no external target, or the task is analysis/review/planning only, keep outputs under `tasks/<task>/artifacts/`.
    - If the user already provided a path, do not ask again.
-4. Every worker used (the entire pool, including cross-vendor `claude-main`/`claude-critic`) must be explicitly recorded in `task.md` `workers_approved` before any worker call.
+4. Every worker used (the entire pool, including the native `claude-main`) must be explicitly recorded in `task.md` `workers_approved` before any worker call.
 5. Write each worker's brief **exactly at `tasks/<task>/workers/<role>/brief.md`** (Korean <= 1200 chars / English <= 240 words). Use a per-worker folder — do NOT flatten to `<role>_brief.md`.
-6. Run the approved worker and save the original response **at `tasks/<task>/workers/<role>/result.md`** (same per-worker folder). `claude-critic`·`gemini` workers MUST be called through the dispatcher (`call_worker.sh`); the dispatcher always runs gate and, in a Git workspace, runs scope_check automatically (non-Git → `scope_check: skipped`; the Codex sandbox and task cwd are the write boundary). A native `codex-main` call MUST first reserve a Hub receipt with `native_worker_receipt.sh start codex-main <brief>` and record `complete` with the same `dispatch_id` after the call; this path also passes gate, and a native call without a Hub task ID is forbidden. Calling MCP directly is not the standard path and is forbidden.
+6. Run the approved worker and save the original response **at `tasks/<task>/workers/<role>/result.md`** (same per-worker folder). `codex-main`·`codex-critic`·`gemini` workers MUST be called through the dispatcher (`call_worker.sh`); the dispatcher always runs gate and, in a Git workspace, runs scope_check automatically (non-Git → `scope_check: skipped`; the Codex sandbox and task cwd are the write boundary). The native `claude-main` worker MUST first reserve a Hub receipt with `native_worker_receipt.sh start claude-main <brief>` and record `complete` with the same `dispatch_id` after the call; this path also passes gate, and a native call without a Hub task ID is forbidden. Calling MCP directly is not the standard path and is forbidden. (Worker call_type is fixed by `_shared/backends.json`: `claude-main` = native, the rest = cli/dispatcher — independent of which provider orchestrates.)
 7. Execute the `result.md` Verification Checklist.
 8. Append verification results to `log.md` with `[VERIFICATION]`. When the task is finished, update `status` in `task.md` to `done`.
 9. On completion, append lessons, classified: **general lessons about running the system itself** → `_shared/learnings.md` (tracked/public). **Lessons specific to one external project** (mat·hwpx, etc.) → `_local/learnings.md` (git-untracked; create if absent). `_local/learnings.md` is not loaded unless explicitly requested.
@@ -128,8 +129,8 @@ If `context.md` exceeds the limit, append history to `log.md`, then keep only th
 ## Approval Gate
 
 - Never call a worker that is missing from `workers_approved` (applies to the entire worker pool).
-- **Enforcement**: `_shared/adapters/gate.sh` decides fail-closed (G2 approval · G3 `[APPROVAL]` log entry · G1 brief location · G4 length limit · G5 external-write conditions · G0 interactive session). Automatic through the dispatcher (claude-critic·gemini); run it before native calls only (Task Lifecycle step 6).
-- Worker approval is task-specific and includes purpose and any external write scope.
+- **Enforcement**: `_shared/adapters/gate.sh` decides fail-closed (G2 approval · G3 `[APPROVAL]` log entry · G1 brief location · G4 length limit · G5 external-write conditions · G0 interactive session). Automatic through the dispatcher (codex-main·codex-critic·gemini); run it before the native (claude-main) call only (Task Lifecycle step 6).
+- Before the first worker call of a task, confirm with the user, then update `task.md`. Worker approval is task-specific and includes purpose and any external write scope.
 - The Orchestrator's internal reasoning does not require approval.
 - External paid model tools still require explicit user approval even if the task is already created.
 
@@ -153,8 +154,9 @@ Default checks:
 
 | Worker | Default write permission | External repo write |
 |--------|--------------------------|---------------------|
+| claude-main | None; Orchestrator records the response | Never |
 | codex-main | `tasks/<task>/` outputs/diffs | Conditional |
-| claude-critic | None; Orchestrator records the dispatcher response | Never |
+| codex-critic | None; Orchestrator records the response | Never |
 | gemini | None; Orchestrator records the dispatcher response | Never |
 
 ### `write_scope` Values
