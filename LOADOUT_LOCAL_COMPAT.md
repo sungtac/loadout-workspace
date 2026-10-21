@@ -19,6 +19,7 @@
 
 - Stop Hook은 `~/.local/bin`을 PATH에 추가한 뒤 `coach --hook`을 호출한다.
   - 이 PATH 보정 때문에 플러그인 generic doctor(`store.py --doctor`)는 "guard(claude): Stop 훅이 hook.json 정본과 불일치"로 **오탐(WARN)**한다. 이는 의도된 로컬 보정이므로 canon으로 재설치하지 말 것(재설치하면 PATH 보정이 제거돼 최소 환경에서 `coach` 미발견 → guard 무력화). 로컬 정본을 인식하는 `scripts/loadout-doctor.sh`가 이 WARN을 정상(INFO)으로 재판정한다.
+- Codex 워처 `_shared/guard/codex_goal_watch.mjs`는 플러그인 원본에 **로컬 패치**(`_shared/guard/codex_goal_watch.local.patch`)를 적용한 판이다. 원본은 `coach --guard-check`의 종료 코드가 0이 아니면 모두(coach 부재·크래시·30초 타임아웃 포함) 정지로 봐, 위 fail-open 규칙과 반대로 Codex goal을 지웠다. 패치는 coach 계약대로 **exit 10일 때만 정지**하고, Claude 훅처럼 `~/.local/bin`을 PATH에 넣으며, provider 목록을 Claude 훅과 같은 `claude,codex,antigravity`로 맞춘다(`GUARD_PROVIDERS`는 이름 문자만 허용). `scripts/loadout-doctor.sh`는 "원본 + 이 패치 = 로컬 파일"일 때만 정상(INFO)으로 재판정하므로, 재설치하지 말고 플러그인이 갱신되면 패치를 다시 맞춘다. upstream(netwaif/loadout)에도 같은 수정이 필요하다.
 - 현재 guard는 `off`다. 활성화 전에는 `coach guard status`로 정책을 재확인한다.
 - guard가 중지한 작업은 자동 재할당하지 않는다. 재개·handoff는 사용자의 명시적 지시와 Agent Hub 원장 계약이 준비된 뒤에만 수행한다.
 

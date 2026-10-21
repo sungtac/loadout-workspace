@@ -25,6 +25,9 @@ if [ -z "$GEN" ] || [ ! -f "$GEN/store.py" ]; then
 fi
 STORE="$GEN/store.py"
 CANON_HOOK="$GEN/fragments/guard/hook.json"
+CANON_WATCH="$GEN/fragments/guard/files.codex/_shared/guard/codex_goal_watch.mjs"
+LOCAL_WATCH="$ROOT/_shared/guard/codex_goal_watch.mjs"
+WATCH_PATCH="$ROOT/_shared/guard/codex_goal_watch.local.patch"
 
 echo "== loadout doctor (로컬 정본 인식 래퍼) =="
 echo "   플러그인: $STORE"
@@ -35,16 +38,30 @@ tmp="$(mktemp)"; trap 'rm -f "$tmp"' EXIT
 raw_rc=0
 python3 "$STORE" --target "$ROOT" --doctor >"$tmp" 2>&1 || raw_rc=$?
 
+# Codex 요금가드 워처의 로컬 패치(fail-open 교정) 판정: 원본 + 기록된 패치가 로컬 파일과 정확히 같을 때만
+# "patched"로 인정한다. 플러그인 원본이 바뀌어 패치가 안 맞으면 "mismatch" → WARN을 그대로 둔다.
+watch_state=mismatch
+if [ -f "$CANON_WATCH" ] && [ -f "$LOCAL_WATCH" ]; then
+  if cmp -s "$CANON_WATCH" "$LOCAL_WATCH"; then watch_state=exact
+  elif [ -f "$WATCH_PATCH" ] && command -v patch >/dev/null 2>&1; then
+    wtmp="$(mktemp)"
+    if patch --quiet -o "$wtmp" "$CANON_WATCH" "$WATCH_PATCH" >/dev/null 2>&1 && cmp -s "$wtmp" "$LOCAL_WATCH"; then watch_state=patched; fi
+    rm -f "$wtmp" "$wtmp.orig" "$wtmp.rej"
+  fi
+fi
+
 # 재판정 + 집계 재작성은 python이 담당(견고한 JSON/문자열 비교). 종료코드로 신호.
 #   0 = FAIL 없음·실제 WARN 없음, 2 = 실제 WARN 있음(FAIL 없음), 1 = FAIL 또는 guard 로컬정본 불일치
 set +e
-python3 - "$tmp" "$SETTINGS" "$CANON_HOOK" "$raw_rc" <<'PY'
+python3 - "$tmp" "$SETTINGS" "$CANON_HOOK" "$raw_rc" "$watch_state" <<'PY'
 import json, re, sys
 report_path, settings_path, canon_path = sys.argv[1], sys.argv[2], sys.argv[3]
 raw_rc = int(sys.argv[4])
+watch_state = sys.argv[5]
 lines = open(report_path, encoding="utf-8").read().splitlines()
 
 WARN_SIG = "guard(claude): Stop 훅이 hook.json 정본과 불일치"
+WATCH_SIG = "guard(codex): 워처가 codex_goal_watch.mjs 정본과 불일치"
 
 # 로컬 정본 판정: 설치된 guard(claude) 훅이 canonical과 'PATH 보정'만 다른가?
 #   "benign"  = 의도된 로컬 보정(재판정 대상)
@@ -70,6 +87,7 @@ def guard_hook_state():
 state = guard_hook_state()
 out = []
 reclassified = False
+watch_reclassified = False
 for ln in lines:
     if ln.strip().startswith("진단 결과:"):
         continue  # 재집계 후 새로 쓴다
@@ -77,6 +95,10 @@ for ln in lines:
         reclassified = True
         out.append("  [INFO] guard(claude): Stop 훅이 로컬 정본(LOADOUT_LOCAL_COMPAT.md "
                    "— ~/.local/bin PATH 보정)과 일치 — 플러그인 generic canon과의 차이는 의도됨")
+    elif watch_state == "patched" and WATCH_SIG in ln:
+        watch_reclassified = True
+        out.append("  [INFO] guard(codex): 워처 = 원본 + 로컬 패치(codex_goal_watch.local.patch — "
+                   "exit 10만 정지·fail-open 교정)와 정확히 일치 — 의도된 차이")
     else:
         out.append(ln)
 
@@ -98,7 +120,9 @@ out.append(f"  진단 결과(로컬 정본 재판정): {verdict}")
 if reclassified:
     out.append("  ⌙ generic doctor의 guard(claude) 훅 WARN 1건은 의도된 로컬 보정으로")
     out.append("    확인됨 → 실제 결함 아님(재설치하지 말 것).")
-elif state == "mismatch":
+if watch_reclassified:
+    out.append("  ⌙ guard(codex) 워처 WARN은 기록된 로컬 패치와 정확히 일치 → 재설치하지 말 것(패치가 사라짐).")
+if not reclassified and state == "mismatch":
     out.append("  ⚠️ guard(claude) Stop 훅이 로컬 정본(PATH 보정)과도 불일치 — 실제 점검 필요.")
 
 print("\n".join(out))

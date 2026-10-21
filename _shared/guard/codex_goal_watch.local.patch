@@ -1,0 +1,60 @@
+--- canon/_shared/guard/codex_goal_watch.mjs
++++ local/_shared/guard/codex_goal_watch.mjs
+@@ -7,8 +7,9 @@
+ //
+ // 가드 *정책*은 워처가 갖지 않는다 — `coach --guard-check`(usage-coach)가 단일 정본으로 판정한다
+ // (guard-enabled 플래그·7일 하이브리드 OR·pace/floor 모두 거기서). 워처는 그 결정을 *집행*만 한다.
+-//   coach --guard-check 계약: 통과 = exit 0 + 무출력 / 정지 = exit≠0 또는 stdout에 사유 1줄.
+-//   coach 미설치/조회실패 = fail-open(정지하지 않음 — 작업 안 죽임).
++//   coach --guard-check 계약: 정지 = exit 10 + stdout 사유 1줄 / 그 밖의 종료는 통과.
++//   coach 미설치·조회실패·크래시·타임아웃 = fail-open(정지하지 않음 — 작업 안 죽임).
++//   [로컬 패치 — LOADOUT_LOCAL_COMPAT.md] 원본은 exit≠0 전부(coach 부재 포함)를 정지로 봐 fail-open 문서와 반대였다.
+ //
+ // Transport(중요): codex의 app-server는 **loopback WebSocket**으로 붙는다. unix 소켓(control·
+ // --listen unix://)은 UDS 위 WebSocket이고 `app-server proxy`는 stdio↔UDS 얇은 바이트파이프라
+@@ -19,7 +20,8 @@
+ //
+ // 실행:  node _shared/guard/codex_goal_watch.mjs
+ // 환경:  GUARD_INTERVAL=초(기본 60) · GUARD_WS_PORT=포트(기본 47931) ·
+-//        GUARD_WS_URL=ws URL(기본 ws://127.0.0.1:$GUARD_WS_PORT) · GUARD_PROVIDERS=coach provider(기본 codex)
++//        GUARD_WS_URL=ws URL(기본 ws://127.0.0.1:$GUARD_WS_PORT) ·
++//        GUARD_PROVIDERS=coach provider 목록(기본 claude,codex,antigravity — Claude Stop 훅과 동일)
+ // 정지:  Ctrl-C. 가드 자체를 끄려면 `coach guard off`(워처는 coach 결정을 따르므로 즉시 무력화).
+ 
+ import { spawn } from "node:child_process";
+@@ -27,24 +29,29 @@
+ const INTERVAL_MS = Math.max(5, parseInt(process.env.GUARD_INTERVAL || "60", 10)) * 1000;
+ const PORT = parseInt(process.env.GUARD_WS_PORT || "47931", 10);
+ const WS_URL = process.env.GUARD_WS_URL || `ws://127.0.0.1:${PORT}`;
+-const PROVIDERS = process.env.GUARD_PROVIDERS || "codex";
++// Claude Stop 훅과 같은 목록을 본다(어느 provider의 한도든 두 루프가 똑같이 멈춘다).
++// 셸에 들어가므로 provider 이름 문자만 허용하고, 아니면 기본값을 쓴다.
++const DEFAULT_PROVIDERS = "claude,codex,antigravity";
++const PROVIDERS = /^[a-z0-9_-]+(,[a-z0-9_-]+)*$/.test(process.env.GUARD_PROVIDERS || "")
++  ? process.env.GUARD_PROVIDERS : DEFAULT_PROVIDERS;
+ 
+ const log = (...a) => console.log(new Date().toISOString(), ...a);
+ 
+ // ── coach --guard-check: 단일 정본 판정. true=정지해야 함, false=통과/판정불가(fail-open) ──
+ function shouldStop() {
+   return new Promise((resolve) => {
+-    // command -v 로 coach 부재 시 fail-open(정지 안 함). 셸 경유라 PATH 함정도 흡수.
+-    const sh = `command -v coach >/dev/null 2>&1 && coach --guard-check --providers ${PROVIDERS}`;
++    // Claude Stop 훅처럼 ~/.local/bin을 PATH에 넣고, coach가 없으면 exit 0(=통과)으로 끝낸다.
++    const sh = `PATH="$HOME/.local/bin:$PATH"; command -v coach >/dev/null 2>&1 || exit 0; exec coach --guard-check --providers "${PROVIDERS}"`;
+     const child = spawn("/bin/sh", ["-c", sh], { stdio: ["ignore", "pipe", "pipe"] });
+     let out = "";
+     child.stdout.on("data", (d) => (out += d));
+     const timer = setTimeout(() => child.kill("SIGTERM"), 30000);
+     child.on("close", (code) => {
+       clearTimeout(timer);
+-      // coach 부재 → sh exit 0 + 무출력 → 통과. 정지 = exit≠0 또는 사유 출력.
+-      const stop = code !== 0 || out.trim().length > 0;
+-      resolve({ stop, reason: out.trim() || (code !== 0 ? `coach --guard-check exit ${code}` : "") });
++      // 정지는 coach의 exit 10뿐. 크래시(1·2)·타임아웃(null)·부재(0)는 fail-open — 경고만 남긴다.
++      const stop = code === 10;
++      if (!stop && code !== 0) log("[guard.warn] coach --guard-check exit", code, "— 판정 불가, 통과(fail-open)");
++      resolve({ stop, reason: stop ? (out.trim() || "coach --guard-check exit 10") : "" });
+     });
+     child.on("error", () => { clearTimeout(timer); resolve({ stop: false, reason: "" }); });
+   });
