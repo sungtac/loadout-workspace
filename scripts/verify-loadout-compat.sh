@@ -153,7 +153,8 @@ else
   ng 'coach and codexbar are discoverable'
 fi
 
-guard_status="$(coach guard status 2>&1 || true)"
+# 판정은 stdout 첫 줄만 본다. 조회 실패 경고는 stderr로 나오므로(로그인 전 새 PC 등) 합치면 첫 줄을 가린다.
+guard_status="$(coach guard status 2>/dev/null || true)"
 if printf '%s\n' "$guard_status" | sed -n '1p' | grep -Fq '요금가드: off'; then
   ok 'guard remains off'
 else
